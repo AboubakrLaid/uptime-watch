@@ -8,6 +8,7 @@ venv/
 envs/.env
 envs/.env.*
 !envs/.env.example
+!envs/.env.pipeline
 
 # Django
 staticfiles/
