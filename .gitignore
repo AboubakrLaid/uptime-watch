@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment variables and secrets
+envs/.env
+envs/.env.*
+!envs/.env.example
+
+# Django
+staticfiles/
+media/
+*.log
+
+# IDE
+.idea/
+.vscode/

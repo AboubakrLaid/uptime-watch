@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  uptime-watch-db:
+    container_name: uptime-watch-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - ENV
+      - DEBUG
+      - BACK_HOST
+      - DJANGO_PORT
+      - DJANGO_SECRET_KEY
+      - POSTGRES_DB
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - DB_HOST
+      - DB_PORT
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - uptime_watch_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  uptime_watch_pgdata:
