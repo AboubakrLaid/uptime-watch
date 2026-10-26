@@ -42,7 +42,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Prepare pipeline environment file
-        run: cp envs/.env.pipeline .env
+        run: cp envs/.env.dev .env
 
       - name: Run Django tests
         run: python manage.py test tests
