@@ -45,9 +45,7 @@ if ENV == "PROD":
 else:
     SECRET_KEY = get_env_value("DJANGO_SECRET_KEY", default="dev-secret-key-change-me")
     BACK_HOST = get_env_value("BACK_HOST", default="http://127.0.0.1:8000")
-    POSTGRES_DB = get_env_value(
-        "POSTGRES_DB", default="uptime_watch_dev" if ENV == "DEV" else "uptime_watch_ci"
-    )
+    POSTGRES_DB = get_env_value("POSTGRES_DB", default="uptime_watch_dev")
     POSTGRES_USER = get_env_value("POSTGRES_USER", default="uptime_watch_dev")
     POSTGRES_PASSWORD = get_env_value(
         "POSTGRES_PASSWORD", default="dev-password-change-me"

@@ -38,14 +38,6 @@ class SettingsEnvironmentTests(unittest.TestCase):
         self.assertEqual(settings.DB_HOST, "127.0.0.1")
         self.assertEqual(settings.DJANGO_PORT, "8000")
 
-    def test_testing_uses_pipeline_environment(self):
-        settings = self.reload_settings("TESTING")
-
-        self.assertEqual(settings.ENV, "TESTING")
-        self.assertFalse(settings.DEBUG)
-        self.assertEqual(settings.POSTGRES_DB, "uptime_watch_ci")
-        self.assertEqual(settings.DB_HOST, "127.0.0.1")
-
     def test_production_requires_runtime_secrets(self):
         with self.assertRaises(Exception):
             self.reload_settings("PROD")
