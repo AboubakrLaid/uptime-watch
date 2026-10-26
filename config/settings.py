@@ -8,48 +8,56 @@ from django.core.exceptions import ImproperlyConfigured
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def get_env_value(name: str, *, required: bool = False):
+def get_env_value(name: str, *, required: bool = False, default=None):
     value = os.getenv(name)
-    if required and (value is None or value == ""):
-        raise ImproperlyConfigured(f"Missing required environment variable: {name}")
+    if value is None or value == "":
+        if default is not None:
+            return default
+        if required:
+            raise ImproperlyConfigured(f"Missing required environment variable: {name}")
+        return None
     return value
 
 
-if not os.getenv("ENV"):
-    env_file = BASE_DIR / "envs" / ".env.dev"
-    root_env = BASE_DIR / ".env"
-    env_path = (
-        env_file if env_file.exists() else root_env if root_env.exists() else None
+ENV = os.getenv("ENV")
+if ENV is None:
+    dotenv.load_dotenv(BASE_DIR / ".env")
+    ENV = os.getenv("ENV", "DEV")
+
+ENV = ENV.upper()
+if ENV not in {"DEV", "PROD"}:
+    raise ImproperlyConfigured("ENV must be one of: DEV, PROD")
+
+DEBUG = get_env_value("DEBUG", default="True" if ENV == "DEV" else "False").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+if ENV == "PROD":
+    SECRET_KEY = get_env_value("DJANGO_SECRET_KEY", required=True)
+    BACK_HOST = get_env_value("BACK_HOST", required=True)
+    POSTGRES_DB = get_env_value("POSTGRES_DB", required=True)
+    POSTGRES_USER = get_env_value("POSTGRES_USER", required=True)
+    POSTGRES_PASSWORD = get_env_value("POSTGRES_PASSWORD", required=True)
+    DB_HOST = get_env_value("DB_HOST", required=True)
+else:
+    SECRET_KEY = get_env_value("DJANGO_SECRET_KEY", default="dev-secret-key-change-me")
+    BACK_HOST = get_env_value("BACK_HOST", default="http://127.0.0.1:8000")
+    POSTGRES_DB = get_env_value("POSTGRES_DB", default="uptime_watch_dev")
+    POSTGRES_USER = get_env_value("POSTGRES_USER", default="uptime_watch_dev")
+    POSTGRES_PASSWORD = get_env_value(
+        "POSTGRES_PASSWORD", default="dev-password-change-me"
     )
+    DB_HOST = get_env_value("DB_HOST", default="127.0.0.1")
 
-    if env_path is not None:
-        dotenv.load_dotenv(env_path)
-
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip() or line.startswith("#"):
-                    continue
-                key, value = line.strip().split("=", 1)
-                if key in ["DB_HOST", "REDIS_HOST"]:
-                    value = "localhost"
-                if key == "ELASTIC_HOST":
-                    value = "http://localhost:9200"
-                if not os.getenv(key):
-                    os.environ[key] = value
-
-
-ENV = get_env_value("ENV", required=True)
-DEBUG = get_env_value("DEBUG", required=True).lower() in {"1", "true", "yes", "on"}
-SECRET_KEY = get_env_value("DJANGO_SECRET_KEY", required=True)
-BACK_HOST = get_env_value("BACK_HOST", required=True)
-DJANGO_PORT = get_env_value("DJANGO_PORT", required=True)
-POSTGRES_DB = get_env_value("POSTGRES_DB", required=True)
-POSTGRES_USER = get_env_value("POSTGRES_USER", required=True)
-POSTGRES_PASSWORD = get_env_value("POSTGRES_PASSWORD", required=True)
-DB_HOST = get_env_value("DB_HOST", required=True)
-DB_PORT = get_env_value("DB_PORT", required=True)
-
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "0.0.0.0"]
+DJANGO_PORT = get_env_value("DJANGO_PORT", default="8000")
+DB_PORT = get_env_value("DB_PORT", default="5432")
+ALLOWED_HOSTS = get_env_value(
+    "ALLOWED_HOSTS", default="127.0.0.1,localhost,0.0.0.0"
+).split(",")
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",

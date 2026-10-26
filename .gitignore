@@ -6,6 +6,12 @@ venv/
 
 # Environment variables and secrets
 .env
+.env.*
+!/.env.example
+!envs/.env.example
+!envs/.env.dev.example
+!envs/.env.pipeline.example
+!envs/.env.production.example
 
 # Django
 staticfiles/
