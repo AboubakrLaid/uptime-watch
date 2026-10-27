@@ -2,11 +2,13 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from main.models import Website
+from main.views.website import WebsiteListCreateAPIView
 
 
 class WebsiteAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.assertTrue(issubclass(WebsiteListCreateAPIView, object))
 
     def test_list_websites(self):
         Website.objects.create(name="Example", url="https://example.com")
