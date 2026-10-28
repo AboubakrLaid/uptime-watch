@@ -1,23 +1,28 @@
-# Python
+# Python runtime
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.sqlite3
 
-# Environment variables and secrets
+# Secrets and environment files
 .env
 .env.*
-!/.env.example
-!envs/.env.example
-!envs/.env.dev.example
-!envs/.env.pipeline.example
-!envs/.env.production.example
+!envs/.env.dev
+!envs/.env.prod
 
-# Django
+# Django generated output
 staticfiles/
 media/
 *.log
 
-# IDE
+# Nginx and TLS local artifacts
+nginx/certs/
+nginx/logs/
+
+# Docker local state
+*.pid
+
+# IDE/editor settings
 .idea/
 .vscode/

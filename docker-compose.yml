@@ -44,12 +44,27 @@ services:
     depends_on:
       uptime-watch-db:
         condition: service_healthy
-    ports:
-      - "${DJANGO_PORT}:8000"
+    expose:
+      - "8000"
     volumes:
       - .:/code
     command: >
       sh -c "python manage.py runserver 0.0.0.0:${DJANGO_PORT}"
+
+  nginx:
+    container_name: uptime-watch-nginx
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - uptime-watch-app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/logs:/var/log/nginx
+      - ./staticfiles:/usr/share/nginx/html/static:ro
 
 volumes:
   uptime_watch_pgdata:

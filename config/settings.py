@@ -19,12 +19,16 @@ def get_env_value(name: str, *, required: bool = False, default=None):
     return value
 
 
-ENV = os.getenv("ENV")
-if ENV is None:
-    dotenv.load_dotenv(BASE_DIR / ".env")
-    ENV = os.getenv("ENV", "DEV")
+ENV = os.getenv("ENV", "DEV").upper()
+if ENV not in {"DEV", "PROD"}:
+    raise ImproperlyConfigured("ENV must be one of: DEV, PROD")
 
-ENV = ENV.upper()
+if ENV == "PROD":
+    dotenv.load_dotenv(BASE_DIR / "envs" / ".env.prod")
+else:
+    dotenv.load_dotenv(BASE_DIR / "envs" / ".env.dev")
+
+ENV = os.getenv("ENV", ENV).upper()
 if ENV not in {"DEV", "PROD"}:
     raise ImproperlyConfigured("ENV must be one of: DEV, PROD")
 
@@ -54,10 +58,43 @@ else:
 
 DJANGO_PORT = get_env_value("DJANGO_PORT", default="8000")
 DB_PORT = get_env_value("DB_PORT", default="5432")
-ALLOWED_HOSTS = get_env_value(
-    "ALLOWED_HOSTS", default="127.0.0.1,localhost,0.0.0.0"
-).split(",")
+APP_DOMAIN = get_env_value("APP_DOMAIN", default="localhost")
+
+if ENV == "PROD":
+    ALLOWED_HOSTS = get_env_value(
+        "ALLOWED_HOSTS",
+        default=f"{APP_DOMAIN},www.{APP_DOMAIN}",
+    ).split(",")
+    CSRF_TRUSTED_ORIGINS = get_env_value(
+        "CSRF_TRUSTED_ORIGINS",
+        default=f"https://{APP_DOMAIN},https://www.{APP_DOMAIN}",
+    ).split(",")
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    USE_X_FORWARDED_HOST = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+else:
+    ALLOWED_HOSTS = get_env_value(
+        "ALLOWED_HOSTS", default="127.0.0.1,localhost,0.0.0.0"
+    ).split(",")
+    CSRF_TRUSTED_ORIGINS = get_env_value(
+        "CSRF_TRUSTED_ORIGINS",
+        default="https://localhost,https://127.0.0.1,https://0.0.0.0",
+    ).split(",")
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+    USE_X_FORWARDED_HOST = False
+
 ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in CSRF_TRUSTED_ORIGINS if origin.strip()
+]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -134,7 +171,8 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "main.User"
