@@ -8,7 +8,7 @@ The application is a small website-availability tracking service, inspired by to
 
 ### 1. Git workflow automation
 
-- Built a custom Push-new-feature workflow in `.github/skills/push-new-feature/SKILL.md`
+- Built a custom Push-new-feature skill in `.github/skills/push-new-feature/SKILL.md`
 - Detects the current working directory
 - Suggests a branch name and commit message
 - Helps structure the feature push flow
