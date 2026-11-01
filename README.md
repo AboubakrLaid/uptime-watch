@@ -9,10 +9,10 @@ The application is a small website-availability tracking service, inspired by to
 ### 1. Git workflow automation — 2026-10-25
 
 - Trace: [snapshot at df246b4](https://github.com/AboubakrLaid/uptime-watch/tree/df246b4)
-- Built a custom Push-new-feature skill in `.github/skills/push-new-feature/SKILL.md`
+- Built a custom branch-and-push skill in `.github/skills/branch-and-push/SKILL.md`
 - Detects the current working directory
 - Suggests a branch name and commit message
-- Helps structure the feature push flow
+- Helps structure the branch-and-push workflow for any code change
 
 ### 2. CI for automated validation — 2026-10-25
 
