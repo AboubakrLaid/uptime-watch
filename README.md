@@ -6,22 +6,25 @@ The application is a small website-availability tracking service, inspired by to
 
 ## What I have built so far
 
-### 1. Git workflow automation
+### 1. Git workflow automation — 2026-10-25
 
+- Trace: [snapshot at df246b4](https://github.com/AboubakrLaid/uptime-watch/tree/df246b4)
 - Built a custom Push-new-feature skill in `.github/skills/push-new-feature/SKILL.md`
 - Detects the current working directory
 - Suggests a branch name and commit message
 - Helps structure the feature push flow
 
-### 2. CI for automated validation
+### 2. CI for automated validation — 2026-10-25
 
+- Trace: [snapshot at 4c0cb6d](https://github.com/AboubakrLaid/uptime-watch/tree/4c0cb6d)
 - Implemented a CI pipeline in `.github/workflows/pytest.yml`
 - Runs validation automatically on code changes
 - Helps enforce quality gates before merge
 - Builds confidence through repeatable checks
 
-### 3. Health checks and startup validation
+### 3. Health checks and startup validation — 2026-10-27
 
+- Trace: [snapshot at f32fd8d](https://github.com/AboubakrLaid/uptime-watch/tree/f32fd8d)
 - health check
   - `/health/ready/` runs a real DB query `SELECT 1` to make sure the database is usable, not only reachable
   - `/health/deep/` is used to check whether other services are reachable, such as Redis, Celery, or Elasticsearch, and can be expanded later if needed
@@ -32,8 +35,9 @@ The application is a small website-availability tracking service, inspired by to
   - It makes sure the app can connect to the database and execute a real query during startup
   - This helps fail fast during deployment instead of starting a service that looks alive but is not ready to serve traffic
 
-### 4. Basic deployment
+### 4. Basic deployment — 2026-10-28
 
+- Trace: [snapshot at dc3aec7](https://github.com/AboubakrLaid/uptime-watch/tree/dc3aec7)
 - Added Nginx to the Docker Compose setup and made it the entry point for the application.
 - Kept the API service internal and exposed it only through Nginx.
 - Configured SSL for secure HTTPS access.
@@ -49,6 +53,13 @@ The application is a small website-availability tracking service, inspired by to
 - The architecture now runs through Docker Compose with three containers: Nginx, API, and database. They communicate through a Docker network, and Nginx is the only public entry point to the application.
 
 ![Uptime Watch Architecture and Deployment Flow](pics/Uptime%20Watch%20Architecture%20and%20Deployment%20Flow.png)
+
+### 5. Multi-environment Docker setup — 2026-11-01
+
+- Trace: [snapshot at cff9225](https://github.com/AboubakrLaid/uptime-watch/tree/cff9225)
+- I am using two Docker Compose configurations.
+- The production setup includes `api`, `db`, and `nginx`.
+- The default setup includes `app` and `db`.
 
 ## Notes
 
