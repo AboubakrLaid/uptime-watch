@@ -27,6 +27,37 @@ jobs:
           echo "repository=${{ github.repository }}"
           echo "ref=${{ github.ref }}"
           echo "event_name=${{ github.event_name }}"
+                - name: Inspect OIDC claims
+          shell: bash
+          run: |
+            TOKEN_JSON=$(curl -fsS \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+  
+            ID_TOKEN=$(echo "$TOKEN_JSON" | jq -r '.value')
+  
+            node -e '
+              const token = process.argv[1];
+              const payload = JSON.parse(
+                Buffer.from(token.split(".")[1], "base64url").toString("utf8")
+              );
+  
+              const claims = [
+                "iss",
+                "aud",
+                "sub",
+                "repository",
+                "repository_id",
+                "repository_owner",
+                "repository_owner_id",
+                "ref",
+                "event_name"
+              ];
+  
+              for (const claim of claims) {
+                console.log(`${claim}=${payload[claim]}`);
+              }
+            ' "$ID_TOKEN"
 
       - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
