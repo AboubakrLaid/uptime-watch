@@ -61,6 +61,14 @@ The application is a small website-availability tracking service, inspired by to
 - The production setup includes `api`, `db`, and `nginx`.
 - The default setup includes `app` and `db`.
 
+### 6. Developement to main release flow — 2026-11-03
+
+- Trace: [snapshot at f493514](https://github.com/AboubakrLaid/uptime-watch/tree/f493514)
+- All changes are merged into developement during normal work.
+- When it is time to deploy, developement is merged into main.
+- The main branch push triggers the build and push to AWS ECR.
+- This gives a simple, predictable deployment flow.
+
 ## Notes
 
 - The project is intentionally minimal and ready for progressively adding DevOps and monitoring learning notions.
