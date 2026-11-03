@@ -24,55 +24,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Display GitHub context
-      - name: Debug GitHub identity
-        run: |
-          echo "repository=${{ github.repository }}"
-          echo "ref=${{ github.ref }}"
-          echo "event_name=${{ github.event_name }}"
-
-      # 3. Inspect actual OIDC token claims
-      - name: Inspect OIDC claims
-        shell: bash
-        run: |
-          TOKEN_JSON=$(curl -fsS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
-
-          ID_TOKEN=$(echo "$TOKEN_JSON" | jq -r '.value')
-
-          node -e '
-            const token = process.argv[1];
-
-            const payload = JSON.parse(
-              Buffer.from(token.split(".")[1], "base64url").toString("utf8")
-            );
-
-            const claims = [
-              "iss",
-              "aud",
-              "sub",
-              "repository",
-              "repository_id",
-              "repository_owner",
-              "repository_owner_id",
-              "ref",
-              "event_name"
-            ];
-
-            for (const claim of claims) {
-              console.log(`${claim}=${JSON.stringify(payload[claim])}`);
-            }
-          ' "$ID_TOKEN"
-
-      # 4. Authenticate with AWS using GitHub OIDC
+      # 2. Authenticate with AWS using GitHub OIDC
       - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
           aws-region: eu-west-3
 
-      # 5. Login to Amazon ECR
+      # 3. Login to Amazon ECR
       - name: Login to Amazon ECR
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
@@ -80,25 +39,22 @@ jobs:
                 --username AWS \
                 --password-stdin "$ECR_REGISTRY"
 
-      # 6. Ensure ECR repository exists
-      - name: Ensure repository exists
+      # 4. Check whether the ECR repository exists
+      - name: Check ECR repository
         run: |
           if ! aws ecr describe-repositories \
             --repository-names "$ECR_REPOSITORY" \
             --region "$AWS_REGION" > /dev/null 2>&1; then
 
-            aws ecr create-repository \
-              --repository-name "$ECR_REPOSITORY" \
-              --region "$AWS_REGION" \
-              --image-scanning-configuration scanOnPush=true \
-              --encryption-configuration encryptionType=AES256
+            echo "ECR repository '$ECR_REPOSITORY' does not exist."
+            echo "Please create it in AWS infrastructure config before running this workflow."
+            exit 1
           fi
 
-      # 7. Build and push Docker image
+      # 5. Build and push Docker image
       - name: Build and push image
         run: |
-          IMAGE_TAG="${GITHUB_REF_NAME}-${GITHUB_SHA:0:7}"
-          RUN_TAG="${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}"
+          IMAGE_TAG="upwatch-backend-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
 
           echo "Building image: $IMAGE_TAG"
 
@@ -109,15 +65,8 @@ jobs:
             "$ECR_REPOSITORY:$IMAGE_TAG" \
             "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-          docker tag \
-            "$ECR_REPOSITORY:$IMAGE_TAG" \
-            "$ECR_REGISTRY/$ECR_REPOSITORY:$RUN_TAG"
-
-          echo "Pushing images to ECR..."
-
+          echo "Pushing image to ECR..."
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$RUN_TAG"
 
           echo "Successfully pushed:"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          echo "$ECR_REGISTRY/$ECR_REPOSITORY:$RUN_TAG"
