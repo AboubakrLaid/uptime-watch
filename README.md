@@ -66,7 +66,7 @@ The application is a small website-availability tracking service, inspired by to
 - Trace: [snapshot at f493514](https://github.com/AboubakrLaid/uptime-watch/tree/f493514)
 - All changes are merged into developement during normal work.
 - When it is time to deploy, developement is merged into main.
-- The main branch push triggers the build and push to AWS ECR.
+- The main branch push triggers building the app Docker image and pushing it to AWS ECR.
 - This gives a simple, predictable deployment flow.
 
 ## Notes
