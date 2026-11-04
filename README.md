@@ -78,6 +78,8 @@ The application is a small website-availability tracking service, inspired by to
 - The deployment step also starts the app container, runs Django migrations, and collects static files so the new release is ready to serve.
 - This creates a simple semi-automated release flow: GitHub Actions handles image publication, while EC2 runs the final pull-and-start step for deployment.
 
+![ECR to EC2 Deployment Workflow](pics/ECR%20to%20EC2%20Deployment%20Workflow.png)
+
 ### 8. Stable startup on deploy — 2026-11-05
 
 - Trace: [snapshot at 43b05cc](https://github.com/AboubakrLaid/uptime-watch/tree/43b05cc)
@@ -85,8 +87,6 @@ The application is a small website-availability tracking service, inspired by to
 - I tightened the startup flow so the app waits for PostgreSQL before Gunicorn starts, and Nginx only starts after the app is healthy.
 - This makes deployment more predictable and avoids exposing a broken upstream during a container restart.
 - The outcome is a more stable startup path for production releases.
-
-![ECR to EC2 Deployment Workflow](pics/ECR%20to%20EC2%20Deployment%20Workflow.png)
 
 ## Notes
 
