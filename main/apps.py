@@ -15,5 +15,7 @@ class MainConfig(AppConfig):
             self.startup_validated = True
             print("Startup validation passed: database is available.")
         except Exception as exc:
-            print(f"Startup validation failed: database is unavailable. {exc}")
+            message = f"Startup validation failed: database is unavailable. {exc}"
+            print(message)
             self.startup_validated = False
+            raise RuntimeError(message)
