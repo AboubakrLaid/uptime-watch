@@ -12,7 +12,7 @@ APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 APP_IMAGE="${APP_IMAGE:-}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo main)}"
-export IMAGE_TAG
+export AWS_REGION AWS_ACCOUNT_ID ECR_REPOSITORY ECR_REGISTRY APP_IMAGE IMAGE_TAG
 
 usage() {
   cat <<EOF
@@ -96,7 +96,6 @@ git reset --hard "origin/$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
 if [[ -z "$APP_IMAGE" ]]; then
-  IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo main)}"
   APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 fi
 
