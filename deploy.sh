@@ -10,6 +10,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-${REPO_ROOT}/docker-compose-prod.yml}"
 APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+APP_IMAGE="${APP_IMAGE:-}"
+IMAGE_TAG="${IMAGE_TAG:-}"
 
 usage() {
   cat <<EOF
@@ -92,15 +94,25 @@ git fetch origin "$BRANCH" --prune
 git reset --hard "origin/$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
-if docker compose -f "$COMPOSE_FILE" config | grep -q "image:"; then
-  echo "Pulling updated images from Compose..."
-  docker compose -f "$COMPOSE_FILE" pull
-else
-  echo "Compose file is build-based; the image will be rebuilt during startup."
+if [[ -z "$IMAGE_TAG" ]]; then
+  IMAGE_TAG="$(aws ecr describe-images \
+    --repository-name "$ECR_REPOSITORY" \
+    --region "$AWS_REGION" \
+    --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' \
+    --output text 2>/dev/null || echo latest)"
 fi
 
-echo "Starting containers..."
-docker compose -f "$COMPOSE_FILE" up --build -d
+if [[ -z "$APP_IMAGE" ]]; then
+  APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+fi
+
+export APP_IMAGE
+
+echo "Pulling app image from ECR: $APP_IMAGE"
+docker compose -f "$COMPOSE_FILE" pull "$APP_SERVICE"
+
+echo "Starting containers from pulled image..."
+docker compose -f "$COMPOSE_FILE" up -d
 
 echo "Running database migrations..."
 docker compose -f "$COMPOSE_FILE" exec -T "$APP_SERVICE" python manage.py migrate
