@@ -26,9 +26,7 @@ services:
 
   uptime-watch-app:
     container_name: uptime-watch-app
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:latest}
     restart: unless-stopped
     environment:
       - ENV
@@ -46,8 +44,6 @@ services:
         condition: service_healthy
     expose:
       - "8000"
-    volumes:
-      - .:/code
     command: >
       sh -c "gunicorn config.wsgi:application --bind 0.0.0.0:${DJANGO_PORT} --workers 3"
 
