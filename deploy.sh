@@ -11,7 +11,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-${REPO_ROOT}/docker-compose-prod.yml}"
 APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 APP_IMAGE="${APP_IMAGE:-}"
-IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo main)}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 export AWS_REGION AWS_ACCOUNT_ID ECR_REPOSITORY ECR_REGISTRY APP_IMAGE IMAGE_TAG
 
 usage() {
@@ -97,6 +97,14 @@ git pull --ff-only origin "$BRANCH"
 
 if [[ -z "$APP_IMAGE" ]]; then
   APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+  if ! aws ecr describe-images \
+    --repository-name "$ECR_REPOSITORY" \
+    --image-ids "imageTag=${IMAGE_TAG}" \
+    --region "$AWS_REGION" > /dev/null 2>&1; then
+    APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+    echo "Image tag '${IMAGE_TAG}' was not found in ECR; falling back to 'latest'."
+  fi
 fi
 
 export IMAGE_TAG APP_IMAGE
