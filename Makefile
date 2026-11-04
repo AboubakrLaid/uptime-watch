@@ -15,5 +15,8 @@ resetdb:
 up:
 	docker compose up -d
 
+deploy:
+	./deploy.sh
+
 run:
 	python3 manage.py runserver_plus
