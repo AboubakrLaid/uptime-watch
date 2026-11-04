@@ -78,6 +78,14 @@ The application is a small website-availability tracking service, inspired by to
 - The deployment step also starts the app container, runs Django migrations, and collects static files so the new release is ready to serve.
 - This creates a simple semi-automated release flow: GitHub Actions handles image publication, while EC2 runs the final pull-and-start step for deployment.
 
+### 8. Stable startup on deploy — 2026-11-05
+
+- Trace: [snapshot at 43b05cc](https://github.com/AboubakrLaid/uptime-watch/tree/43b05cc)
+- After `make deploy` recreated the app container while Nginx was already running, Nginx hit `connect() failed (113: Host is unreachable)` while connecting to the upstream service.
+- I tightened the startup flow so the app waits for PostgreSQL before Gunicorn starts, and Nginx only starts after the app is healthy.
+- This makes deployment more predictable and avoids exposing a broken upstream during a container restart.
+- The outcome is a more stable startup path for production releases.
+
 ![ECR to EC2 Deployment Workflow](pics/ECR%20to%20EC2%20Deployment%20Workflow.png)
 
 ## Notes
@@ -517,6 +525,160 @@ Authenticate Docker to ECR:
 ```bash
 aws ecr get-login-password --region eu-west-1   | docker login --username AWS --password-stdin     123456789012.dkr.ecr.eu-west-1.amazonaws.com
 ```
+
+### 6. EC2 Storage Expansion — Troubleshooting "No space left on device"
+
+The actual error:
+
+```text
+failed to extract layer ... to overlayfs:
+write /var/lib/containerd/...:
+no space left on device
+```
+
+#### 1. What I checked first
+
+```bash
+df -h
+docker system df
+sudo du -sh /var/lib/containerd
+sudo du -sh /var/lib/docker
+```
+
+Actual output:
+
+```text
+Filesystem       Size  Used Avail Use% Mounted on
+/dev/root        6.7G  4.0G  2.7G  61% /
+
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          2         2         839.3MB   0B (0%)
+Containers      2         2         3.523MB   0B (0%)
+Local Volumes   0         0         0B        0B
+Build Cache     0         0         0B        0B
+
+808M    /var/lib/containerd
+597M    /var/lib/docker
+```
+
+The root filesystem only had `2.7G` free. Docker also had no reclaimable storage, so pruning was not the real fix. The bigger issue was that the host disk was simply too small for the image extraction step.
+
+#### 2. What I confirmed before changing anything
+
+```bash
+docker ps -a
+docker images
+sudo lsblk
+```
+
+Relevant output:
+
+```text
+uptime-watch-app
+uptime-watch-nginx
+
+IMAGE                                      DISK USAGE
+uptime-watch:latest                        765MB
+nginx:1.27-alpine                          74.5MB
+
+NAME         SIZE TYPE MOUNTPOINTS
+nvme0n1       8G disk
+├─nvme0n1p1  6.9G part /
+├─nvme0n1p13 1023M part /boot
+├─nvme0n1p14   4M part
+└─nvme0n1p15  106M part /boot/efi
+```
+
+The disk looked 8 GB from AWS, but the root partition was only 6.9 GB. The root filesystem still had to be expanded.
+
+The mental model was:
+
+```text
+EBS Volume → Partition → Filesystem
+```
+
+Increasing the EBS volume alone does not make extra space available to Linux. The partition and filesystem must also be resized.
+
+#### 3. Fix that worked
+
+Increase the EBS volume in AWS, then resize the root partition:
+
+```bash
+sudo growpart /dev/nvme0n1 1
+```
+
+Actual output:
+
+```text
+CHANGED: partition=1 start=2324480
+old: size=14452703 end=16777182
+new: size=22841311 end=25165790
+```
+
+Then expand the ext4 filesystem:
+
+```bash
+sudo resize2fs /dev/nvme0n1p1
+```
+
+Actual output:
+
+```text
+resize2fs 1.47.2 (1-Jan-2025)
+Filesystem at /dev/nvme0n1p1 is mounted on /;
+on-line resizing required
+old_desc_blocks = 1, new_desc_blocks = 2
+The filesystem on /dev/nvme0n1p1 is now 2855163 (4k) blocks long.
+```
+
+After resizing, the root filesystem was back to a healthy state:
+
+```bash
+df -h
+df -hT
+lsblk
+```
+
+Final relevant output:
+
+```text
+Filesystem       Size  Used Avail Use% Mounted on
+/dev/root         11G  4.6G  6.0G  44% /
+```
+
+| Metric          | Before | After   |
+| --------------- | ------ | ------- |
+| Root partition  | 6.9 GB | 10.9 GB |
+| Root filesystem | 6.7 GB | 11 GB   |
+| Available space | 2.7 GB | 6.0 GB  |
+| Usage           | 61%    | 44%     |
+
+#### 4. Quick reminder
+
+```bash
+df -h
+df -hT
+lsblk
+sudo growpart /dev/nvme0n1 1
+sudo resize2fs /dev/nvme0n1p1
+```
+
+When this happens again, the workflow is:
+
+```text
+check free space → inspect Docker storage → inspect block devices → resize EBS → grow partition → resize filesystem → verify → retry deployment
+```
+
+#### 5. Lessons to keep
+
+- `no space left on device` during pull/extract usually means local disk, not registry auth.
+- Docker and containerd storage lives on the EC2 host filesystem.
+- Expanding AWS volume size is only the first step; the partition and filesystem must also be expanded.
+- `lsblk` is the first truth source before resizing.
+- `resize2fs` is for ext filesystems; XFS uses another procedure.
+- Never assume Docker cleanup is the solution when the root filesystem is the real bottleneck.
+
+---
 
 Pull a specific image:
 
