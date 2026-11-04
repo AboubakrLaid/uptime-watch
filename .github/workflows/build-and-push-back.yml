@@ -54,7 +54,7 @@ jobs:
       # 5. Build and push Docker image
       - name: Build and push image
         run: |
-          IMAGE_TAG="upwatch-backend-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
+          IMAGE_TAG="${GITHUB_SHA:0:7}"
 
           echo "Building image: $IMAGE_TAG"
 
@@ -65,8 +65,14 @@ jobs:
             "$ECR_REPOSITORY:$IMAGE_TAG" \
             "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
+          docker tag \
+            "$ECR_REPOSITORY:$IMAGE_TAG" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
           echo "Pushing image to ECR..."
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
           echo "Successfully pushed:"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
