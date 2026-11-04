@@ -21,7 +21,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:${DJANGO_PORT}/health/ready/'').read()" >/dev/null 2>&1 || exit 1',
+          'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:${DJANGO_PORT}/health/live/'').read()" >/dev/null 2>&1 || exit 1',
         ]
       interval: 10s
       timeout: 5s

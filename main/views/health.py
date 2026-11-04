@@ -4,6 +4,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+class LiveHealthView(APIView):
+    permission_classes = []
+
+    def get(self, request, *args, **kwargs):
+        payload = {"status": "ok"}
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class ReadyHealthView(APIView):
     permission_classes = []
 
