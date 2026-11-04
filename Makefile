@@ -16,6 +16,11 @@ up:
 	docker compose up -d
 
 deploy:
+	@echo "Refreshing repo, then running deploy script..."
+	git fetch origin main --prune
+	git checkout main
+	git reset --hard origin/main
+	git pull --ff-only origin main
 	./deploy.sh
 
 run:

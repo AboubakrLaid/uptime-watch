@@ -85,16 +85,6 @@ echo "Authenticating Docker to ECR..."
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
-  git checkout "$BRANCH"
-else
-  git checkout -b "$BRANCH"
-fi
-
-git fetch origin "$BRANCH" --prune
-git reset --hard "origin/$BRANCH"
-git pull --ff-only origin "$BRANCH"
-
 if [[ -z "$APP_IMAGE" ]]; then
   APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
