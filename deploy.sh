@@ -11,7 +11,8 @@ COMPOSE_FILE="${COMPOSE_FILE:-${REPO_ROOT}/docker-compose-prod.yml}"
 APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 APP_IMAGE="${APP_IMAGE:-}"
-IMAGE_TAG="${IMAGE_TAG:-}"
+IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo main)}"
+export IMAGE_TAG
 
 usage() {
   cat <<EOF
@@ -94,19 +95,12 @@ git fetch origin "$BRANCH" --prune
 git reset --hard "origin/$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
-if [[ -z "$IMAGE_TAG" ]]; then
-  IMAGE_TAG="$(aws ecr describe-images \
-    --repository-name "$ECR_REPOSITORY" \
-    --region "$AWS_REGION" \
-    --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' \
-    --output text 2>/dev/null || echo latest)"
-fi
-
 if [[ -z "$APP_IMAGE" ]]; then
+  IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo main)}"
   APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 fi
 
-export APP_IMAGE
+export IMAGE_TAG APP_IMAGE
 
 echo "Pulling app image from ECR: $APP_IMAGE"
 docker compose -f "$COMPOSE_FILE" pull "$APP_SERVICE"

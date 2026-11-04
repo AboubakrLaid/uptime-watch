@@ -26,7 +26,7 @@ services:
 
   uptime-watch-app:
     container_name: uptime-watch-app
-    image: ${APP_IMAGE:-373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:latest}
+    image: ${APP_IMAGE:-373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:${IMAGE_TAG:-latest}}
     restart: unless-stopped
     environment:
       - ENV
