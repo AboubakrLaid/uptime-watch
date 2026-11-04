@@ -137,21 +137,21 @@ Important distinction:
 
 ### 2. Amazon ECR
 
-My actual ECR configuration is:
+My example ECR configuration is:
 
 | Setting        | Value                                          |
 | -------------- | ---------------------------------------------- |
-| AWS account ID | `373080580380`                                 |
-| AWS region     | `eu-west-3`                                    |
-| Registry       | `373080580380.dkr.ecr.eu-west-3.amazonaws.com` |
-| Repository     | `uptime-watch`                                 |
+| AWS account ID | `123456789012`                                 |
+| AWS region     | `eu-west-1`                                    |
+| Registry       | `123456789012.dkr.ecr.eu-west-1.amazonaws.com` |
+| Repository     | `example-uptime-watch`                         |
 
 I use ECR as the private image registry for my project because GitHub Actions builds the image and EC2 later retrieves it. That keeps the build and runtime responsibilities separate and avoids storing images directly on EC2.
 
 GitHub Actions pushes to:
 
 ```text
-373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch
+123456789012.dkr.ecr.eu-west-1.amazonaws.com/example-uptime-watch
 ```
 
 EC2 pulls from the same repository.
@@ -168,8 +168,8 @@ permissions:
 - name: Configure AWS credentials with OIDC
   uses: aws-actions/configure-aws-credentials@v4
   with:
-    role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
-    aws-region: eu-west-3
+    role-to-assume: arn:aws:iam::123456789012:role/example-github-actions-role
+    aws-region: eu-west-1
 ```
 
 Then:
@@ -200,7 +200,7 @@ docker tag "$ECR_REPOSITORY:$IMAGE_TAG"   "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 Result:
 
 ```text
-uptime-watch
+example-uptime-watch
 ├── upwatch-back-20261104-143000-a81f23c
 └── latest
 ```
@@ -231,7 +231,7 @@ I created this identity provider in AWS:
 | Provider      | `token.actions.githubusercontent.com`                                         |
 | Provider type | OpenID Connect                                                                |
 | Audience      | `sts.amazonaws.com`                                                           |
-| ARN           | `arn:aws:iam::373080580380:oidc-provider/token.actions.githubusercontent.com` |
+| ARN           | `arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com` |
 
 Why AWS needs it:
 
@@ -262,8 +262,8 @@ This is safer than long-lived AWS access keys in GitHub secrets because the cred
 Role:
 
 ```text
-uptime-watch-github-actions
-arn:aws:iam::373080580380:role/uptime-watch-github-actions
+example-github-actions-role
+arn:aws:iam::123456789012:role/example-github-actions-role
 ```
 
 This role allows GitHub Actions to authenticate to AWS and push the Docker image to ECR.
@@ -277,13 +277,13 @@ Trust policy:
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::373080580380:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:AboubakrLaid@107946074/uptime-watch@1433115526:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:ExampleOrg@example-repo@123456789:ref:refs/heads/main"
         }
       }
     }
@@ -303,9 +303,9 @@ This means GitHub can assume the role only if the token is for my repo and for `
 The repository identity in the trust policy is:
 
 ```text
-Repository: AboubakrLaid/uptime-watch
-Owner ID: 107946074
-Repository ID: 1433115526
+Repository: ExampleOrg/example-repo
+Owner ID: 123456789
+Repository ID: 123456789
 Branch: main
 ```
 
@@ -334,7 +334,7 @@ Permissions policy:
         "ecr:CompleteLayerUpload",
         "ecr:PutImage"
       ],
-      "Resource": "arn:aws:ecr:eu-west-3:373080580380:repository/uptime-watch"
+      "Resource": "arn:aws:ecr:eu-west-1:123456789012:repository/example-uptime-watch"
     }
   ]
 }
@@ -358,10 +358,10 @@ A role can be trusted and still fail if it lacks the required ECR permissions.
 Role:
 
 ```text
-uptime-watch-ec2-ecr-pull
+example-ec2-ecr-pull-role
 ```
 
-Status: this role still needs verification in AWS before assuming it is already created and attached to the EC2 instance.
+Status: this role is a sample setup for a runtime pull identity and does not reflect a live AWS configuration.
 
 This role is different from the GitHub role because it is for runtime image retrieval, not image publishing.
 
@@ -404,7 +404,7 @@ Permissions policy:
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
-      "Resource": "arn:aws:ecr:eu-west-3:373080580380:repository/uptime-watch"
+      "Resource": "arn:aws:ecr:eu-west-1:123456789012:repository/example-uptime-watch"
     }
   ]
 }
@@ -432,7 +432,7 @@ This is the main difference from the GitHub role:
 2. GitHub Actions starts the workflow.
 3. GitHub Actions requests an OIDC identity token.
 4. AWS STS validates the token against the GitHub role trust policy.
-5. GitHub Actions assumes `uptime-watch-github-actions` role.
+5. GitHub Actions assumes `example-github-actions-role`.
 6. AWS provides temporary credentials to the workflow.
 7. The workflow authenticates Docker to ECR.
 8. Docker pushes the image and tags to the ECR repository.
@@ -461,12 +461,12 @@ At each boundary, the trust and permission model matters:
 flowchart LR
     GH[GitHub Actions] --> OIDC[GitHub OIDC provider]
     OIDC --> STS[AWS STS]
-    STS --> GROLE[uptime-watch-github-actions
+    STS --> GROLE[example-github-actions-role
 IAM role]
-    GROLE -->|push permissions| ECR[ECR repository: uptime-watch]
+    GROLE -->|push permissions| ECR[ECR repository: example-uptime-watch]
 
     EC2[EC2 instance] --> PROFILE[Instance profile]
-    PROFILE --> EROLE[uptime-watch-ec2-ecr-pull
+    PROFILE --> EROLE[example-ec2-ecr-pull-role
 IAM role]
     EROLE -->|pull permissions| ECR
     ECR --> DOCKER[Docker on EC2]
@@ -480,13 +480,13 @@ The important part is that GitHub and EC2 use different roles for different jobs
 
 | Item                 | Value                                                                         |
 | -------------------- | ----------------------------------------------------------------------------- |
-| AWS account ID       | `373080580380`                                                                |
-| AWS region           | `eu-west-3`                                                                   |
-| ECR registry         | `373080580380.dkr.ecr.eu-west-3.amazonaws.com`                                |
-| ECR repository       | `uptime-watch`                                                                |
-| GitHub OIDC provider | `arn:aws:iam::373080580380:oidc-provider/token.actions.githubusercontent.com` |
-| GitHub role          | `arn:aws:iam::373080580380:role/uptime-watch-github-actions`                  |
-| EC2 role             | `uptime-watch-ec2-ecr-pull` (verify in AWS)                                   |
+| AWS account ID       | `123456789012`                                                                |
+| AWS region           | `eu-west-1`                                                                   |
+| ECR registry         | `123456789012.dkr.ecr.eu-west-1.amazonaws.com`                                |
+| ECR repository       | `example-uptime-watch`                                                        |
+| GitHub OIDC provider | `arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com` |
+| GitHub role          | `arn:aws:iam::123456789012:role/example-github-actions-role`                  |
+| EC2 role             | `example-ec2-ecr-pull-role` (sample setup)                                    |
 
 Verify AWS identity:
 
@@ -497,31 +497,31 @@ aws sts get-caller-identity
 Check the ECR repository:
 
 ```bash
-aws ecr describe-repositories   --repository-names uptime-watch   --region eu-west-3
+aws ecr describe-repositories   --repository-names example-uptime-watch   --region eu-west-1
 ```
 
 Check image metadata and digests:
 
 ```bash
-aws ecr describe-images   --repository-name uptime-watch   --region eu-west-3   --output table
+aws ecr describe-images   --repository-name example-uptime-watch   --region eu-west-1   --output table
 ```
 
 List the tags in the repository:
 
 ```bash
-aws ecr list-images   --repository-name uptime-watch   --region eu-west-3
+aws ecr list-images   --repository-name example-uptime-watch   --region eu-west-1
 ```
 
 Authenticate Docker to ECR:
 
 ```bash
-aws ecr get-login-password --region eu-west-3   | docker login --username AWS --password-stdin     373080580380.dkr.ecr.eu-west-3.amazonaws.com
+aws ecr get-login-password --region eu-west-1   | docker login --username AWS --password-stdin     123456789012.dkr.ecr.eu-west-1.amazonaws.com
 ```
 
 Pull a specific image:
 
 ```bash
-docker pull 373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:latest
+docker pull 123456789012.dkr.ecr.eu-west-1.amazonaws.com/example-uptime-watch:latest
 ```
 
 ---
