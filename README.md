@@ -86,6 +86,16 @@ The application is a small website-availability tracking service, inspired by to
 - I tightened the startup flow so the app waits for PostgreSQL before Gunicorn starts, and the app health check acts as a readiness gate for a fresh stack startup.
 - This reduces startup race conditions and makes the deployment path more predictable during a container restart.
 
+### 9. Database on Amazon RDS — 2026-11-05
+
+- Trace: [snapshot at ca1eae7](https://github.com/AboubakrLaid/uptime-watch/tree/ca1eae7)
+- Switched the production stack from a local PostgreSQL container to an external Amazon RDS instance.
+- I configured the AWS security groups so the EC2 instance could send outbound PostgreSQL traffic and the RDS instance accepted inbound PostgreSQL traffic on port 5432.
+- Even though there was no critical data to lose, I still verified the path before bringing down the old database container and its volume: I first checked the RDS endpoint with Netcat, then I used psql to confirm that I could authenticate to the PostgreSQL service.
+- This moved the app closer to a real production setup and separated the runtime environment from the database layer.
+
+![AWS Architecture - RDS](pics/AWS%20Architecture-%20RDS.png)
+
 ## Notes
 
 This is my practical AWS reference for the exact setup I configured around this project. It focuses only on the parts I actually use: EC2, Amazon ECR, IAM trust and permissions, GitHub OIDC, and the authentication boundaries between them.
@@ -678,12 +688,218 @@ check free space → inspect Docker storage → inspect block devices → resize
 
 ---
 
-Pull a specific image:
+### 6. Amazon RDS integration
 
-```bash
-docker pull 123456789012.dkr.ecr.eu-west-1.amazonaws.com/example-uptime-watch:latest
+#### 1. VPC and private networking
+
+A VPC is the AWS network boundary for the resources that belong together. EC2, RDS, subnets, route tables, and security groups all live inside a VPC, and the resources need to be in the same network context to talk to each other. In this project, the EC2 instance and the PostgreSQL database are in the same VPC in `eu-west-3`, so their private networking can work without exposing the database to the internet.
+
+The practical reason this matters is simple: the app runs in a Docker container on EC2, but the database is not on the same machine or the same Docker network. The database is reached through the VPC and its private endpoint. The actual path is:
+
+```text
+Django container → EC2 host/network → VPC → RDS private endpoint → PostgreSQL
 ```
 
----
+This is not Docker networking. It is AWS networking. The RDS endpoint is a private DNS name that resolves to a private IP inside the VPC, not a public address. A private IP is only routable inside the VPC and related network paths; it is not reachable from the public internet by default. That is why RDS can be private and still reachable from the application while not being publicly accessible.
 
-This is the part I need to remember: GitHub uses OIDC to assume a push role, EC2 uses an instance profile role to assume a pull role, and both are connected through the same ECR repository. The trust policy tells AWS who may assume the role; the permissions policy tells AWS what that role may do after it is assumed.
+The DNS piece matters because clients do not connect to a fixed IP; they connect to the hostname. For this instance, the endpoint is:
+
+```text
+uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com
+```
+
+That hostname resolves in the VPC to the observed private IP:
+
+```text
+172.31.48.73
+```
+
+So the app resolves the RDS endpoint to a private address, then connects over the VPC network to the PostgreSQL service. The AWS region is `eu-west-3`, and the name is tied to the specific RDS instance created for this project.
+
+#### 2. Security groups
+
+A security group is a virtual firewall attached to an AWS resource. It is not a separate host firewall; it is the access policy that controls network traffic to and from the resource. Inbound rules decide what is allowed to enter; outbound rules decide what the resource is allowed to send out. For this project, security groups are the reason EC2 can reach RDS on PostgreSQL without exposing the database publicly.
+
+Security groups are stateful. If EC2 initiates a TCP connection to PostgreSQL on port 5432, the response traffic is automatically allowed back in without needing a separate inbound rule for that response. This is why EC2 does not need a separate inbound PostgreSQL rule just to receive replies; the connection is already tracked as part of the allowed session.
+
+My actual setup was:
+
+| Security group | Type       | Protocol | Port   | Rule direction | Source / destination     |
+| -------------- | ---------- | -------- | ------ | -------------- | ------------------------ |
+| `ec2-rds-1`    | PostgreSQL | TCP      | `5432` | Outbound       | Destination: `rds-ec2-1` |
+| `rds-ec2-1`    | PostgreSQL | TCP      | `5432` | Inbound        | Source: `ec2-rds-1`      |
+
+This is the connection model I used:
+
+- The EC2 security group `ec2-rds-1` allows outbound PostgreSQL traffic on TCP `5432`.
+- The RDS security group `rds-ec2-1` allows inbound PostgreSQL traffic on TCP `5432` only from the EC2 security group.
+- The RDS inbound rule is essential because RDS is the resource being reached; without it, the database would reject the connection even if EC2 had a valid outbound rule.
+
+Using another security group as the source/destination is more practical than hardcoding a single EC2 private IP. If the instance changes, the security group still represents the correct identity for the allowed traffic. In other words, the rule says “allow traffic from EC2 instances in this security group” instead of “allow traffic from this specific IP address.”
+
+It is also worth noting that allowing all outbound traffic on EC2 would permit the connection as well, but an explicit outbound rule to RDS on port 5432 is more restrictive and clearer. It documents the intended database path instead of relying on a broad default.
+
+#### 3. Testing network connectivity with Netcat
+
+`nc` is Netcat: a small utility for testing TCP and UDP connectivity to a host and port. I used it when I wanted to confirm that the RDS hostname resolved and that the database listener was reachable on PostgreSQL port 5432, without sending any SQL or application payloads.
+
+The command I executed was:
+
+```bash
+nc -zv uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com 5432
+```
+
+What the flags mean:
+
+- `nc`: Netcat
+- `-z`: scan for a listening port without sending data
+- `-v`: verbose output
+- `uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com`: destination hostname
+- `5432`: PostgreSQL port
+
+The successful output was:
+
+```text
+Connection to uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com
+(172.31.48.73) 5432 port [tcp/postgresql] succeeded!
+```
+
+This confirms several useful things:
+
+- DNS resolution works for the RDS hostname.
+- The hostname resolves to the private IP `172.31.48.73`.
+- The target is reachable over TCP.
+- Port `5432` is accepting connections.
+
+This does not confirm:
+
+- PostgreSQL credentials are valid.
+- The database exists.
+- SQL queries can execute successfully.
+- The application can run database operations correctly.
+
+So `nc` is a network-layer validation. It proves that the path is open and reachable, not that the PostgreSQL service is fully usable for application logic.
+
+#### 4. Amazon RDS PostgreSQL: configuration and terminology
+
+These are the terms that matter for my actual setup and they are easy to mix up if I am not careful.
+
+##### DB instance identifier
+
+The DB instance identifier is the AWS-side name for the RDS resource itself. It is the identifier used to create the database service in AWS and it appears in the generated endpoint. For this project, the DB instance identifier is:
+
+```text
+uptime-watch-db-prod
+```
+
+That name is used to generate the full endpoint:
+
+```text
+uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com
+```
+
+##### Endpoint
+
+The endpoint is the hostname clients use to connect to the RDS service. It is generated by AWS and resolves to the database’s private IP inside the VPC. In this case, it resolves to:
+
+```text
+172.31.48.73
+```
+
+The endpoint is what the application and tools use to reach the database; the DB instance identifier is the AWS resource name behind it.
+
+##### Database name
+
+The database name is not the same as the DB instance identifier. The database name identifies an individual PostgreSQL database inside the PostgreSQL server. One RDS PostgreSQL instance can contain multiple databases, while the DB instance identifier refers to the managed database server resource itself. In practice, the server is the RDS instance and the database is the logical PostgreSQL database inside it.
+
+##### Master username
+
+The master username is the primary administrative login configured when the RDS instance was created. In my testing, I used:
+
+```text
+postgres
+```
+
+This was the PostgreSQL username used for the connection test. The master user is a database user created by RDS, but it is not an unrestricted PostgreSQL superuser. That distinction matters when I interpret `Superuser: off` in the connection metadata.
+
+##### Port
+
+PostgreSQL uses port `5432` by default. In this setup, the database listener is reachable on that port, and the connection string uses the same port for both the network test and the SQL check.
+
+These values fit together like this:
+
+```text
+host = uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com
+port = 5432
+user = postgres
+database = postgres
+```
+
+That is the basic shape of a PostgreSQL connection for this RDS instance.
+
+#### 5. Testing PostgreSQL authentication and SSL with psql
+
+I used `psql` to confirm that I could authenticate to the PostgreSQL service and that the connection was protected by SSL/TLS. The command was:
+
+```bash
+psql \
+  -h uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com \
+  -p 5432 \
+  -U postgres \
+  -d postgres
+```
+
+What each option does:
+
+- `-h`: PostgreSQL server hostname
+- `-p`: server port
+- `-U`: PostgreSQL username to authenticate as
+- `-d`: database name to connect to
+
+I intentionally used `postgres` for both the username and database name, but these are independent values. They only happen to be the same in this test. The important point is that the username and default database are separate configuration inputs, even when they match.
+
+Once connected, the useful commands I used were:
+
+```sql
+SELECT version();
+\conninfo
+\l
+\dt
+\q
+```
+
+What they tell me:
+
+- `SELECT version();` shows the PostgreSQL server version and build information.
+- `\conninfo` shows the active connection details and the endpoint the client is using.
+- `\l` lists databases on the server.
+- `\dt` lists tables in the current schema.
+- `\q` exits `psql`.
+
+The observed connection information was:
+
+```text
+Database             | postgres
+Client User          | postgres
+Host                 | uptime-watch-db-prod.cvi446um23kl.eu-west-3.rds.amazonaws.com
+Host Address         | 172.31.48.73
+Server Port          | 5432
+Password Used        | true
+SSL Connection       | true
+SSL Protocol         | TLSv1.3
+Superuser            | off
+```
+
+This tells me a few important things:
+
+- The hostname resolved and the connection reached the RDS private endpoint.
+- Password-based authentication succeeded.
+- The transport is encrypted with TLS.
+- The server is using PostgreSQL over SSL/TLS with `TLSv1.3`.
+- The master account is not a PostgreSQL superuser, even though it is the administrative RDS account.
+
+One useful distinction here is that the client and server PostgreSQL versions may be different. The `SELECT version();` output shows the server-side version, while the client version is what the local `psql` binary reports. The important validation is not that both versions match; it is that the connection is accepted and encrypted and that the authentication path is working.
+
+This is the practical boundary for the RDS work: the network path is validated first, then the database login is validated, and then the encrypted PostgreSQL session itself is confirmed. These checks answer different questions and should be interpreted separately.
+
+---
