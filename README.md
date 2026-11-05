@@ -83,10 +83,8 @@ The application is a small website-availability tracking service, inspired by to
 ### 8. Stable startup on deploy — 2026-11-05
 
 - Trace: [snapshot at 43b05cc](https://github.com/AboubakrLaid/uptime-watch/tree/43b05cc)
-- After `make deploy` recreated the app container while Nginx was already running, Nginx hit `connect() failed (113: Host is unreachable)` while connecting to the upstream service.
-- I tightened the startup flow so the app waits for PostgreSQL before Gunicorn starts, and Nginx only starts after the app is healthy.
-- This makes deployment more predictable and avoids exposing a broken upstream during a container restart.
-- The outcome is a more stable startup path for production releases.
+- I tightened the startup flow so the app waits for PostgreSQL before Gunicorn starts, and the app health check acts as a readiness gate for a fresh stack startup.
+- This reduces startup race conditions and makes the deployment path more predictable during a container restart.
 
 ## Notes
 
