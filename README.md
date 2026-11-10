@@ -95,3 +95,10 @@ The application is a small website-availability tracking service, inspired by to
 - This moved the app closer to a real production setup and separated the runtime environment from the database layer.
 
 ![AWS Architecture - RDS](pics/AWS%20Architecture-%20RDS.png)
+
+### 10. RDS point-in-time recovery — 2026-11-11
+
+- Trace: [snapshot at 87759a9](https://github.com/AboubakrLaid/uptime-watch/tree/87759a9)
+- Configured Amazon RDS PostgreSQL automated backups with a 1-day retention period and restored a new instance to a selected point in time.
+- Reconfigured Django by changing the database hostname to the restored instance's endpoint and recreating the app container.
+- Verified recovery by confirming that records created after the selected recovery point were absent.
