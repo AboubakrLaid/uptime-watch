@@ -51,20 +51,27 @@ jobs:
             exit 1
           fi
 
-      # 5. Build and push Docker image
-      - name: Build and push image
+      # 5. Build Docker image
+      - name: Build image
         id: build
         run: |
           GIT_TAG="${GITHUB_SHA:0:7}"
           IMAGE_TAG="upwatch-back-$(date -u +%Y%m%d-%H%M%S)-${GIT_TAG}"
 
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "git_tag=$GIT_TAG" >> "$GITHUB_OUTPUT"
 
           echo "Building image: $IMAGE_TAG"
 
           docker build \
             -t "$ECR_REPOSITORY:$IMAGE_TAG" .
 
+      # 6. Push Docker image to ECR
+      - name: Push image
+        env:
+          IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
+          GIT_TAG: ${{ steps.build.outputs.git_tag }}
+        run: |
           docker tag \
             "$ECR_REPOSITORY:$IMAGE_TAG" \
             "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
@@ -86,3 +93,97 @@ jobs:
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:$GIT_TAG"
+
+      # 7. Discover the deployment EC2 instance by tag
+      - name: Find deployment EC2 instance
+        id: instance
+        run: |
+          set -euo pipefail
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=upwatch web server" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output json)
+
+          mapfile -t INSTANCE_IDS < <(jq -r '.[]' <<< "$INSTANCE_IDS")
+
+          if [[ "${#INSTANCE_IDS[@]}" -ne 1 ]]; then
+            echo "Expected exactly one running EC2 instance tagged Name=upwatch web server; found ${#INSTANCE_IDS[@]}."
+            exit 1
+          fi
+
+          echo "instance_id=${INSTANCE_IDS[0]}" >> "$GITHUB_OUTPUT"
+          echo "Found deployment instance: ${INSTANCE_IDS[0]}"
+
+      # 8. Deploy to EC2 through AWS Systems Manager
+      - name: Start deployment on EC2 via SSM
+        id: deploy
+        env:
+          AWS_REGION: eu-west-3
+          EC2_INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+          IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          echo "Deploying image: $IMAGE_TAG"
+
+          COMMAND="cd /home/ubuntu/uptime-watch && IMAGE_TAG='$IMAGE_TAG' make deploy"
+
+          PARAMETERS=$(jq -n --arg command "$COMMAND" \
+            '{commands: [$command]}')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy uptime-watch image $IMAGE_TAG" \
+            --parameters "$PARAMETERS" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command ID: $COMMAND_ID"
+
+      # 9. Wait for deployment and report its result
+      - name: Wait for deployment
+        env:
+          EC2_INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
+        run: |
+          set -euo pipefail
+
+          # Wait for the command to finish (up to 10 minutes).
+          STATUS=""
+
+          for attempt in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || true)
+
+            echo "Deployment status: ${STATUS:-Pending}"
+
+            case "$STATUS" in
+              Success|Failed|TimedOut|Cancelled|Cancelling)
+                break
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          # Retrieve deployment output.
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
+
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "Deployment failed or timed out. Final status: $STATUS"
+            exit 1
+          fi
+
+          echo "Deployment completed successfully."
