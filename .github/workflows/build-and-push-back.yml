@@ -53,9 +53,12 @@ jobs:
 
       # 5. Build and push Docker image
       - name: Build and push image
+        id: build
         run: |
           GIT_TAG="${GITHUB_SHA:0:7}"
           IMAGE_TAG="upwatch-back-$(date -u +%Y%m%d-%H%M%S)-${GIT_TAG}"
+
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
           echo "Building image: $IMAGE_TAG"
 
