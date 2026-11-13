@@ -17,7 +17,7 @@ up:
 
 deploy:
 	@test -n "$(IMAGE_TAG)" || { echo "IMAGE_TAG is required to deploy."; exit 1; }
-	@echo "Refreshing repo, then running deploy script..."
+	@echo "Refreshing repo before running the deploy script..."
 	git fetch origin main --prune
 	git checkout main
 	git reset --hard origin/main
