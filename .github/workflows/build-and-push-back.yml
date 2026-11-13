@@ -121,7 +121,7 @@ jobs:
 
           echo "Deploying image: $IMAGE_TAG"
 
-          COMMAND="sudo -u ubuntu -- make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG='$IMAGE_TAG'"
+          COMMAND="sudo -u ubuntu -- env IMAGE_TAG='$IMAGE_TAG' make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG='$IMAGE_TAG'"
 
           PARAMETERS=$(jq -n --arg command "$COMMAND" \
             '{commands: [$command]}')
