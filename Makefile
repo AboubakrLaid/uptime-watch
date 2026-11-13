@@ -16,12 +16,13 @@ up:
 	docker compose up -d
 
 deploy:
+	@test -n "$(IMAGE_TAG)" || { echo "IMAGE_TAG is required to deploy."; exit 1; }
 	@echo "Refreshing repo, then running deploy script..."
 	git fetch origin main --prune
 	git checkout main
 	git reset --hard origin/main
 	git pull --ff-only origin main
-	./deploy.sh
+	./deploy.sh --image-tag "$(IMAGE_TAG)"
 
 run:
 	python3 manage.py runserver_plus

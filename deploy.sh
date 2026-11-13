@@ -10,15 +10,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-${REPO_ROOT}/docker-compose-prod.yml}"
 APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-APP_IMAGE="${APP_IMAGE:-}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
-export AWS_REGION AWS_ACCOUNT_ID ECR_REPOSITORY ECR_REGISTRY APP_IMAGE IMAGE_TAG
+IMAGE_TAG=""
+export AWS_REGION AWS_ACCOUNT_ID ECR_REPOSITORY ECR_REGISTRY
 
 usage() {
   cat <<EOF
-Usage: ./deploy.sh [options]
+Usage: ./deploy.sh --image-tag IMAGE_TAG [options]
 
 Options:
+  -t, --image-tag      Timestamped image tag to deploy (required)
   -b, --branch         Git branch to deploy (default: main)
   -e, --env            Environment name (default: prod)
   -r, --region         AWS region (default: eu-west-3)
@@ -30,6 +30,14 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -t|--image-tag)
+      if [[ $# -lt 2 ]]; then
+        echo "Option '$1' requires an image tag."
+        exit 1
+      fi
+      IMAGE_TAG="$2"
+      shift 2
+      ;;
     -b|--branch)
       BRANCH="$2"
       shift 2
@@ -62,6 +70,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! "$IMAGE_TAG" =~ ^upwatch-back-[0-9]{8}-[0-9]{6}-[0-9a-f]{7}$ ]]; then
+  echo "A valid timestamped image tag is required (upwatch-back-YYYYMMDD-HHMMSS-SHORTSHA)."
+  exit 1
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required to deploy this project."
   exit 1
@@ -85,18 +98,15 @@ echo "Authenticating Docker to ECR..."
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-if [[ -z "$APP_IMAGE" ]]; then
-  APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-
-  if ! aws ecr describe-images \
-    --repository-name "$ECR_REPOSITORY" \
-    --image-ids "imageTag=${IMAGE_TAG}" \
-    --region "$AWS_REGION" > /dev/null 2>&1; then
-    APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
-    echo "Image tag '${IMAGE_TAG}' was not found in ECR; falling back to 'latest'."
-  fi
+if ! aws ecr describe-images \
+  --repository-name "$ECR_REPOSITORY" \
+  --image-ids "imageTag=${IMAGE_TAG}" \
+  --region "$AWS_REGION" > /dev/null; then
+  echo "Required image tag '${IMAGE_TAG}' was not found in ECR; deployment cannot continue."
+  exit 1
 fi
 
+APP_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 export IMAGE_TAG APP_IMAGE
 
 echo "Pulling app image from ECR: $APP_IMAGE"
