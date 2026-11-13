@@ -59,7 +59,6 @@ jobs:
           IMAGE_TAG="upwatch-back-$(date -u +%Y%m%d-%H%M%S)-${GIT_TAG}"
 
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-          echo "git_tag=$GIT_TAG" >> "$GITHUB_OUTPUT"
 
           echo "Building image: $IMAGE_TAG"
 
@@ -70,7 +69,6 @@ jobs:
       - name: Push image
         env:
           IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
-          GIT_TAG: ${{ steps.build.outputs.git_tag }}
         run: |
           docker tag \
             "$ECR_REPOSITORY:$IMAGE_TAG" \
@@ -80,19 +78,13 @@ jobs:
             "$ECR_REPOSITORY:$IMAGE_TAG" \
             "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
-          docker tag \
-            "$ECR_REPOSITORY:$IMAGE_TAG" \
-            "$ECR_REGISTRY/$ECR_REPOSITORY:$GIT_TAG"
-
           echo "Pushing image to ECR..."
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$GIT_TAG"
 
           echo "Successfully pushed:"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           echo "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          echo "$ECR_REGISTRY/$ECR_REPOSITORY:$GIT_TAG"
 
       # 7. Discover the deployment EC2 instance by tag
       - name: Find deployment EC2 instance
@@ -129,7 +121,7 @@ jobs:
 
           echo "Deploying image: $IMAGE_TAG"
 
-          COMMAND="sudo -u ubuntu -- env IMAGE_TAG='$IMAGE_TAG' make -C /home/ubuntu/uptime-watch deploy"
+          COMMAND="sudo -u ubuntu -- make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG='$IMAGE_TAG'"
 
           PARAMETERS=$(jq -n --arg command "$COMMAND" \
             '{commands: [$command]}')
