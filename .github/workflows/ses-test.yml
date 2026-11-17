@@ -1,0 +1,41 @@
+name: SES Email Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  send-test-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
+          aws-region: eu-west-3
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Send test email through SES
+        run: |
+          aws sesv2 send-email \
+            --region eu-west-3 \
+            --from-email-address alerts@upwatch.live \
+            --destination "ToAddresses=${{ vars.SES_TEST_RECIPIENT }}" \
+            --content '{
+              "Simple": {
+                "Subject": {
+                  "Data": "Uptime Watch - GitHub Actions SES Test"
+                },
+                "Body": {
+                  "Text": {
+                    "Data": "Successfully sent this email from GitHub Actions using AWS SES and OIDC authentication."
+                  }
+                }
+              }
+            }'
