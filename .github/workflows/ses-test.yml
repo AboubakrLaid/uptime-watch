@@ -21,6 +21,12 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
+      - name: Debug SES parameters
+        env:
+          SES_RECIPIENT: ${{ vars.SES_TEST_RECIPIENT }}
+        run: |
+          echo "SES sender: alerts@upwatch.live"
+          echo "SES recipient: $SES_RECIPIENT"
       - name: Send test email through SES
         run: |
           aws sesv2 send-email \
