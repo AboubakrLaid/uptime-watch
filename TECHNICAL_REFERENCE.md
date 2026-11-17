@@ -808,3 +808,119 @@ One useful distinction here is that the client and server PostgreSQL versions ma
 This is the practical boundary for the RDS work: the network path is validated first, then the database login is validated, and then the encrypted PostgreSQL session itself is confirmed. These checks answer different questions and should be interpreted separately.
 
 ---
+
+### 7. Continuous deployment using AWS Systems Manager
+
+The deployment workflow uses GitHub Actions to build and publish an application image to Amazon ECR, then AWS Systems Manager (SSM) Run Command to trigger deployment on the EC2 instance. ECR stores the image; SSM is the remote command mechanism. GitHub Actions coordinates the workflow.
+
+#### 1. Deployment flow
+
+```text
+Push to main (including a merge into main)
+  -> GitHub Actions builds a Docker image
+  -> GitHub Actions pushes a versioned image and latest to ECR
+  -> GitHub Actions discovers the running EC2 instance
+  -> GitHub Actions sends AWS-RunShellScript through SSM
+  -> SSM Agent runs the deployment command on EC2
+  -> make deploy refreshes the main checkout and runs deploy.sh
+  -> deploy.sh pulls the selected image and applies the release
+  -> GitHub Actions reports the SSM command result
+```
+
+The workflow also supports manual runs through `workflow_dispatch`. A merge into `main` triggers the workflow because it updates the `main` branch; pull requests themselves are not workflow triggers.
+
+#### 2. EC2 and SSM configuration
+
+The EC2 instance is configured as an SSM managed node. The Amazon SSM Agent must be installed, running, and able to communicate with Systems Manager. The instance was confirmed as **Online** in Systems Manager Fleet Manager, and a test command was successfully run using `AWS-RunShellScript`.
+
+The EC2 instance role is `uptime-watch-ec2-ecr-pull`. It has these AWS-managed policies attached:
+
+| Policy | Purpose |
+| --- | --- |
+| `AmazonEC2ContainerRegistryReadOnly` | Allows the instance to authenticate with ECR and pull images. |
+| `AmazonSSMManagedInstanceCore` | Allows the SSM Agent to communicate with Systems Manager and receive commands. |
+
+Run Command executes as root on the instance by default. The workflow command explicitly switches to the `ubuntu` user before refreshing the repository and deploying.
+
+#### 3. GitHub Actions identity and permissions
+
+GitHub Actions uses OpenID Connect (OIDC) to assume the IAM role `uptime-watch-github-actions`:
+
+```text
+arn:aws:iam::373080580380:role/uptime-watch-github-actions
+```
+
+The workflow grants itself the OIDC token and repository-read permissions it needs:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+It obtains temporary AWS credentials using `aws-actions/configure-aws-credentials@v4`. This avoids storing long-lived AWS access keys in GitHub Secrets.
+
+The role has the custom policy `uptime-watch-github-actions-ssm` for invoking `AWS-RunShellScript` on the deployment instance and reading command results with `ssm:GetCommandInvocation`. The workflow also discovers the instance by calling `ec2:DescribeInstances`, so the role must be authorized for that API. Its ECR permissions support image publishing. These are separate responsibilities from the EC2 instance role, which is used to pull the image.
+
+#### 4. Building and publishing the image
+
+The workflow in `.github/workflows/build-and-push-back.yml` runs on pushes to `main` and manual dispatch. It uses:
+
+| Setting | Value |
+| --- | --- |
+| AWS account | `373080580380` |
+| AWS region | `eu-west-3` |
+| ECR repository | `uptime-watch` |
+| ECR registry | `373080580380.dkr.ecr.eu-west-3.amazonaws.com` |
+
+Each build creates a UTC timestamped tag containing the short commit SHA:
+
+```text
+upwatch-back-YYYYMMDD-HHMMSS-SHORTSHA
+```
+
+The image is pushed with both that unique tag and the mutable `latest` tag. The workflow passes the unique tag to deployment so EC2 uses the exact image built for that run, not `latest`.
+
+#### 5. SSM command and deployment script
+
+The workflow finds the running EC2 instance tagged `Name=upwatch web server` and requires exactly one match. It then uses the `AWS-RunShellScript` document to send a command through SSM. The command is equivalent to:
+
+```bash
+sudo -u ubuntu -- env IMAGE_TAG='<generated-image-tag>' \
+  make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG='<generated-image-tag>'
+```
+
+SSM does not start commands in the repository directory, so `make -C` specifies the checkout path. The `Makefile` deploy target fetches `origin/main`, checks out `main`, refreshes the checkout to `origin/main`, and runs:
+
+```bash
+./deploy.sh --image-tag "$IMAGE_TAG"
+```
+
+The `deploy.sh` script validates the image tag, checks its prerequisites, authenticates Docker to ECR using the EC2 instance role, verifies that the image exists, and deploys it with the production Compose configuration. It then runs Django migrations and collects static files.
+
+The GitHub Actions workflow polls the SSM command for up to ten minutes, retrieves its standard output and error, and fails if the command does not finish with `Success`. This makes a failed remote deployment fail the workflow rather than appear successful.
+
+#### 6. Component responsibilities and security boundaries
+
+| Component | Responsibility |
+| --- | --- |
+| GitHub Actions | Builds and publishes the image, invokes SSM, and reports the deployment result. |
+| GitHub OIDC and IAM role | Provide temporary AWS credentials and authorize the workflow's AWS operations. |
+| Amazon ECR | Stores the versioned application image. |
+| AWS Systems Manager | Delivers the remote command to the managed EC2 instance. |
+| SSM Agent | Receives and executes the command on EC2. |
+| EC2 instance role | Allows the instance to communicate with SSM and pull images from ECR. |
+| `Makefile` and `deploy.sh` | Refresh the deployment checkout and apply the selected image. |
+
+This design avoids SSH access and SSH private keys in GitHub Secrets. GitHub Actions and EC2 use different AWS roles: the workflow publishes and requests deployment, while the instance role retrieves the image.
+
+#### 7. Verification status
+
+The following infrastructure checks were completed manually:
+
+- The SSM Agent was installed and running, and the EC2 instance appeared Online as a managed node.
+- `AmazonSSMManagedInstanceCore` was attached to the EC2 instance role.
+- A remote shell command succeeded through `AWS-RunShellScript`.
+- GitHub Actions OIDC authentication and the custom SSM policy were configured.
+
+The repository contains the ECR build-and-publish workflow and the SSM deployment steps. End-to-end automated deployment should only be marked verified after a GitHub Actions run successfully deploys an image through SSM and its final command result is confirmed.

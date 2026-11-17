@@ -102,3 +102,10 @@ The application is a small website-availability tracking service, inspired by to
 - Configured Amazon RDS PostgreSQL automated backups with a 1-day retention period and restored a new instance to a selected point in time.
 - Reconfigured Django by changing the database hostname to the restored instance's endpoint and recreating the app container.
 - Verified recovery by confirming that records created after the selected recovery point were absent.
+
+### 11. Automated deployment with AWS Systems Manager — 2026-11-13
+
+- Trace: [snapshot at e39aa11](https://github.com/AboubakrLaid/uptime-watch/tree/e39aa11)
+- Made the EC2 instance manageable through AWS Systems Manager (SSM), allowing GitHub Actions to run deployment commands without SSH.
+- After publishing an image to ECR on pushes to main, the workflow uses SSM Run Command to invoke the deployment target on EC2; `make deploy` refreshes the checkout and runs `deploy.sh` with the image tag.
+- The workflow tracks the SSM command, collects its output, and fails when the deployment command does not succeed.
