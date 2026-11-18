@@ -109,3 +109,13 @@ The application is a small website-availability tracking service, inspired by to
 - Made the EC2 instance manageable through AWS Systems Manager (SSM), allowing GitHub Actions to run deployment commands without SSH.
 - After publishing an image to ECR on pushes to main, the workflow uses SSM Run Command to invoke the deployment target on EC2; `make deploy` refreshes the checkout and runs `deploy.sh` with the image tag.
 - The workflow tracks the SSM command, collects its output, and fails when the deployment command does not succeed.
+
+### 12. SES notifications for deployment results — 2026-11-18
+
+- Trace: [snapshot at 44214b0](https://github.com/AboubakrLaid/uptime-watch/tree/44214b0)
+- Added a separate GitHub Actions workflow triggered when “Push and Build Back” completes on main.
+- Sends a success or failure email through SES for the full pipeline, including build, ECR push, and SSM deployment outcomes.
+- Includes the branch, commit, and originating workflow run link to support investigation.
+- Keeps notification logic separate from deployment steps.
+
+![Uptime Watch deployment succeeded](pics/Uptime%20Watch%20deployment%20succeeded.png)
