@@ -185,3 +185,7 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
     ],
 }
+
+SECURE_REDIRECT_EXEMPT = [
+    r"^health/",
+]
