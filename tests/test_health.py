@@ -1,9 +1,9 @@
-import main
 from unittest.mock import patch
 
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+import main
 from main.apps import MainConfig
 
 
@@ -29,11 +29,18 @@ class HealthEndpointTests(TestCase):
         with patch("main.views.health.connection.cursor") as mock_cursor:
             mock_cursor.side_effect = Exception("database unavailable")
 
-            response = self.client.get("/health/ready/")
+            with self.assertLogs("main.views.health", level="ERROR") as logs:
+                response = self.client.get("/health/ready/")
 
         self.assertEqual(response.status_code, 503)
         self.assertFalse(response.data["healthy"])
         self.assertFalse(response.data["checks"]["database"]["healthy"])
+        self.assertEqual(
+            response.data["checks"]["database"]["details"],
+            "Database connectivity check failed.",
+        )
+        self.assertNotIn("database unavailable", str(response.data))
+        self.assertIn("Database readiness check failed.", logs.output[0])
 
     def test_app_ready_validation_runs(self):
         app_config = MainConfig("main", main)

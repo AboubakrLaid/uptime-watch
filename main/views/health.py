@@ -1,7 +1,11 @@
+import logging
+
 from django.db import connection
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
 
 
 class LiveHealthView(APIView):
@@ -34,13 +38,12 @@ class ReadyHealthView(APIView):
             }
             payload = {"healthy": True, "checks": checks}
             return Response(payload, status=status.HTTP_200_OK)
-        except (
-            Exception
-        ) as exc:  # pragma: no cover - this path is exercised by the live app
+        except Exception:  # pragma: no cover - this path is exercised by the live app
+            logger.exception("Database readiness check failed.")
             checks["database"] = {
                 "healthy": False,
                 "status": "error",
-                "details": str(exc),
+                "details": "Database connectivity check failed.",
             }
             payload = {"healthy": False, "checks": checks}
             return Response(payload, status=status.HTTP_503_SERVICE_UNAVAILABLE)
