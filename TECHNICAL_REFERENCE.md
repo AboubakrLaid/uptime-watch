@@ -32,7 +32,7 @@ Instead, EC2 gets temporary credentials from AWS through the instance metadata s
 The operational flow is:
 
 ```bash
-aws ecr get-login-password --region eu-west-3   | docker login --username AWS --password-stdin     373080580380.dkr.ecr.eu-west-3.amazonaws.com
+aws ecr get-login-password --region eu-west-3   | docker login --username AWS --password-stdin     <AWS_ACCOUNT_ID>.dkr.ecr.eu-west-3.amazonaws.com
 ```
 
 This is the boundary where AWS authentication and Docker authentication are separate but related:
@@ -273,6 +273,36 @@ This distinction matters:
 - Permissions policy decides whether the assumed identity can push an image.
 
 A role can be trusted and still fail if it lacks the required ECR permissions.
+
+##### SES email-sending permission
+
+The same GitHub Actions role is also authorized to send email through Amazon Simple Email Service (SES). Its custom policy is named `uptime-watch-github-actions-ses-send` and allows the `ses:SendEmail` action. A simplified version of the SES statement is:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ses:SendEmail",
+  "Resource": [
+    "arn:aws:ses:eu-west-3:<AWS_ACCOUNT_ID>:identity/upwatch.live",
+    "arn:aws:ses:eu-west-3:<AWS_ACCOUNT_ID>:identity/<VERIFIED_RECIPIENT_EMAIL>"
+  ],
+  "Condition": {
+    "StringEquals": {
+      "ses:FromAddress": "alerts@upwatch.live"
+    }
+  }
+}
+```
+
+The SES identity ARNs scope the permission to the identities included in this policy. The `ses:FromAddress` condition separately limits the sender address the role may use. Including a recipient email identity ARN in `Resource` does not itself express a destination-recipient restriction; SES has a separate `ses:Recipients` condition key for that purpose. This policy's `ses:FromAddress` condition is a sender restriction, not a recipient restriction.
+
+These are separate authorization checks:
+
+- The OIDC trust policy determines whether the GitHub workflow can assume the role.
+- The role's permissions policy determines whether its temporary credentials may call `ses:SendEmail`.
+- SES identity verification and account sending status determine whether SES will accept the sender and destination for delivery.
+
+Successful OIDC authentication therefore does not imply permission to send email. Likewise, IAM permission does not verify an SES identity or remove sandbox restrictions.
 
 #### 3.3 EC2 IAM role
 
@@ -847,7 +877,7 @@ Run Command executes as root on the instance by default. The workflow command ex
 GitHub Actions uses OpenID Connect (OIDC) to assume the IAM role `uptime-watch-github-actions`:
 
 ```text
-arn:aws:iam::373080580380:role/uptime-watch-github-actions
+arn:aws:iam::<AWS_ACCOUNT_ID>:role/uptime-watch-github-actions
 ```
 
 The workflow grants itself the OIDC token and repository-read permissions it needs:
@@ -868,10 +898,10 @@ The workflow in `.github/workflows/build-and-push-back.yml` runs on pushes to `m
 
 | Setting | Value |
 | --- | --- |
-| AWS account | `373080580380` |
+| AWS account | `<AWS_ACCOUNT_ID>` |
 | AWS region | `eu-west-3` |
 | ECR repository | `uptime-watch` |
-| ECR registry | `373080580380.dkr.ecr.eu-west-3.amazonaws.com` |
+| ECR registry | `<AWS_ACCOUNT_ID>.dkr.ecr.eu-west-3.amazonaws.com` |
 
 Each build creates a UTC timestamped tag containing the short commit SHA:
 
@@ -924,3 +954,76 @@ The following infrastructure checks were completed manually:
 - GitHub Actions OIDC authentication and the custom SSM policy were configured.
 
 The repository contains the ECR build-and-publish workflow and the SSM deployment steps. End-to-end automated deployment should only be marked verified after a GitHub Actions run successfully deploys an image through SSM and its final command result is confirmed.
+
+---
+
+### 8. Amazon SES email notifications
+
+Amazon Simple Email Service (SES) is a managed email-sending service. In this project it is an outbound notification service: GitHub Actions calls SES after the build-and-deployment workflow completes, and SES attempts delivery to the configured recipient. SES sends the email; it is not the application's mailbox or a mail-hosting service.
+
+#### 1. Identities, domain verification, and DKIM
+
+An SES identity is an email address or domain that has been verified as controlled by the account. SES uses identities to authorize sending:
+
+- **Email address identity:** verifies one specific address. In the SES Sandbox, the destination address must also be verified before sending to it.
+- **Domain identity:** verifies a domain and, once verified, permits sending from addresses under that domain, subject to IAM and SES account restrictions. It does not create mailboxes.
+
+This project uses the domain identity `upwatch.live` in `eu-west-3` and Easy DKIM. Domain verification requires publishing the DNS records SES provides to prove control of the domain. Easy DKIM provides DKIM DNS records that allow SES to sign messages for the domain; DKIM authenticates the sending domain and supports email authentication and deliverability.
+
+The sender is `alerts@upwatch.live`. A separately provisioned mailbox for this address is not required merely to send through SES: the verified domain identity authorizes the address. However, that does not make the address a working inbox; replies or bounce handling require appropriate mail infrastructure if they are needed.
+
+“Verified” means SES has confirmed control of the identity using its verification process. It does not mean the address has a mailbox, that arbitrary recipients can be contacted, or that IAM has granted the caller permission to send.
+
+#### 2. Sandbox and sender versus recipient
+
+The SES account is in the Sandbox in `eu-west-3`. In this mode, the sender must use a verified SES identity and recipients generally must also be verified in that region (apart from SES mailbox-simulator addresses). Sandbox sending quotas and rates are limited. Verification of the domain does not automatically verify a destination email address; this setup separately verified its test recipient as an email identity.
+
+The two addresses in a send request have different roles:
+
+- `FromEmailAddress` is the sender. Here it is `alerts@upwatch.live`, authorized through the verified domain identity and restricted by IAM.
+- `ToAddresses` contains the destination. The test recipient comes from the GitHub Actions variable `SES_TEST_RECIPIENT` and must satisfy Sandbox verification requirements.
+
+The sender identity and recipient identity are distinct SES identities. The sender does not need to be a mailbox, while the verified recipient must be able to receive the test email.
+
+#### 3. Sending with the AWS CLI
+
+The workflow uses the SES v2 CLI command `aws sesv2 send-email`. A simplified equivalent is:
+
+```bash
+aws sesv2 send-email \
+  --region eu-west-3 \
+  --from-email-address alerts@upwatch.live \
+  --destination "ToAddresses=<VERIFIED_RECIPIENT_EMAIL>" \
+  --content '{
+    "Simple": {
+      "Subject": {"Data": "Uptime Watch test"},
+      "Body": {"Text": {"Data": "SES test message"}}
+    }
+  }'
+```
+
+Replace the placeholder with a verified destination while the account remains in the Sandbox. `--from-email-address` selects the sender; `--destination` selects the recipient; `--content` supplies the message. The CLI operation uses the IAM action `ses:SendEmail`.
+
+#### 4. GitHub Actions integration and project flow
+
+Both SES workflows use GitHub's OIDC integration and the existing `uptime-watch-github-actions` role in `eu-west-3`. The workflow grants `id-token: write`, and `aws-actions/configure-aws-credentials@v4` exchanges the GitHub OIDC token for temporary AWS credentials by assuming that role. This avoids storing permanent AWS access keys in GitHub.
+
+The project has two related workflows:
+
+- `.github/workflows/ses-test.yml` is manually started with `workflow_dispatch`. It sends a test email from `alerts@upwatch.live` to the Actions variable `SES_TEST_RECIPIENT`.
+- `.github/workflows/deployment-notification.yml` runs when the “Push and Build Back” workflow completes on `main`. It sends a success or failure notification with the branch, commit, and run link. It uses `SES_NOTIFICATION_RECIPIENT` when set, otherwise falls back to `SES_TEST_RECIPIENT`.
+
+GitHub Actions variables keep the destination address out of the workflow source. They are configuration values rather than AWS credentials; the role's IAM policy and SES's identity/sandbox checks still control whether sending is allowed.
+
+The implemented flow is:
+
+```text
+GitHub Actions workflow
+  -> GitHub OIDC token
+  -> AWS STS assumes uptime-watch-github-actions
+  -> temporary credentials authorized by uptime-watch-github-actions-ses-send
+  -> aws sesv2 send-email in eu-west-3
+  -> SES accepts the verified sender and permitted Sandbox recipient
+```
+
+The manual SES workflow successfully sent a test email. The domain identity is verified with Easy DKIM, and the recipient email identity is separately verified. These SES-side settings and IAM policy are configured in AWS and are not defined as infrastructure-as-code in this repository; the workflow files document the calls and configuration inputs, not the AWS resource state.
