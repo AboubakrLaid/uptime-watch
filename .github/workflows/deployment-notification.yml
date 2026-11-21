@@ -24,7 +24,7 @@ jobs:
           role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
           aws-region: eu-west-3
 
-      - name: Send pipeline result through SES
+      - name: Send deployment result notification through SES
         env:
           PIPELINE_RESULT: ${{ github.event.workflow_run.conclusion }}
           PIPELINE_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
 
           if [[ -z "$SES_RECIPIENT" ]]; then
-            echo "Set the SES_NOTIFICATION_RECIPIENT or SES_TEST_RECIPIENT Actions variable."
+            echo "::error::Set the SES_NOTIFICATION_RECIPIENT or SES_TEST_RECIPIENT Actions variable."
             exit 1
           fi
 
@@ -53,8 +53,43 @@ jobs:
             --arg body "$BODY" \
             '{Simple:{Subject:{Data:$subject},Body:{Text:{Data:$body}}}}')
 
-          aws sesv2 send-email \
+          echo "::group::Notification context"
+          echo "Upstream workflow result: $PIPELINE_RESULT"
+          echo "Branch: $PIPELINE_BRANCH"
+          echo "Commit: $PIPELINE_COMMIT"
+          echo "Workflow run: $PIPELINE_RUN_URL"
+          echo "::endgroup::"
+          if [[ "$PIPELINE_RESULT" == "success" ]]; then
+            echo "::notice::Sending the deployment success notification."
+          else
+            echo "::warning::The upstream workflow concluded with '$PIPELINE_RESULT'; sending a failure notification."
+          fi
+
+          echo "::group::Send notification through Amazon SES"
+          if MESSAGE_ID=$(aws sesv2 send-email \
             --region eu-west-3 \
             --from-email-address alerts@upwatch.live \
             --destination "$(jq -cn --arg recipient "$SES_RECIPIENT" '{ToAddresses:[$recipient]}')" \
-            --content "$CONTENT"
+            --content "$CONTENT" \
+            --query 'MessageId' \
+            --output text); then
+            echo "::endgroup::"
+            echo "Notification sent successfully (SES message ID: $MESSAGE_ID)."
+          else
+            AWS_EXIT_STATUS=$?
+            echo "::endgroup::"
+            echo "::error::Amazon SES failed to send the workflow notification (AWS CLI exit code: $AWS_EXIT_STATUS)."
+            exit "$AWS_EXIT_STATUS"
+          fi
+
+          {
+            echo "## Deployment notification"
+            echo
+            echo "| Detail | Value |"
+            echo "| --- | --- |"
+            echo "| Workflow result | $PIPELINE_RESULT |"
+            echo "| Branch | $PIPELINE_BRANCH |"
+            echo "| Commit | $PIPELINE_COMMIT |"
+            echo "| Notification | Sent (SES message ID: $MESSAGE_ID) |"
+            echo "| Workflow run | $PIPELINE_RUN_URL |"
+          } >> "$GITHUB_STEP_SUMMARY"
