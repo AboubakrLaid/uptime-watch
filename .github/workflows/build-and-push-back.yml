@@ -20,133 +20,96 @@ jobs:
       ECR_REGISTRY: 373080580380.dkr.ecr.eu-west-3.amazonaws.com
 
     steps:
+      # 1. Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Authenticate with AWS using GitHub OIDC
       - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
           aws-region: eu-west-3
 
-      - name: Authenticate Docker with Amazon ECR
+      # 3. Login to Amazon ECR
+      - name: Login to Amazon ECR
         run: |
-          set -euo pipefail
-
-          echo "::group::Authenticate Docker with Amazon ECR"
-          if aws ecr get-login-password --region "$AWS_REGION" \
+          aws ecr get-login-password --region "$AWS_REGION" \
             | docker login \
                 --username AWS \
-                --password-stdin "$ECR_REGISTRY"; then
-            echo "::endgroup::"
-            echo "Docker authenticated with $ECR_REGISTRY."
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::Could not authenticate Docker with Amazon ECR."
-            exit "$EXIT_STATUS"
-          fi
+                --password-stdin "$ECR_REGISTRY"
 
-      - name: Verify Amazon ECR repository
+      # 4. Check whether the ECR repository exists
+      - name: Check ECR repository
         run: |
-          set -euo pipefail
-
-          echo "::group::Discover Amazon ECR repository"
-          if REPOSITORY_URI=$(aws ecr describe-repositories \
+          if ! aws ecr describe-repositories \
             --repository-names "$ECR_REPOSITORY" \
-            --region "$AWS_REGION" \
-            --query 'repositories[0].repositoryUri' \
-            --output text); then
-            echo "::endgroup::"
-            echo "Found ECR repository: $REPOSITORY_URI"
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::Could not find or describe ECR repository '$ECR_REPOSITORY'. See the AWS CLI diagnostic above."
-            exit "$EXIT_STATUS"
+            --region "$AWS_REGION" > /dev/null 2>&1; then
+
+            echo "ECR repository '$ECR_REPOSITORY' does not exist."
+            echo "Please create it in AWS infrastructure config before running this workflow."
+            exit 1
           fi
 
-      - name: Build Docker image
+      # 5. Build Docker image
+      - name: Build image
         id: build
         run: |
-          set -euo pipefail
-
           GIT_TAG="${GITHUB_SHA:0:7}"
           IMAGE_TAG="upwatch-back-$(date -u +%Y%m%d-%H%M%S)-${GIT_TAG}"
 
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-          echo "::group::Build Docker image $IMAGE_TAG"
-          if docker build -t "$ECR_REPOSITORY:$IMAGE_TAG" .; then
-            echo "::endgroup::"
-            echo "Docker image built successfully: $ECR_REPOSITORY:$IMAGE_TAG"
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::Docker build failed for image tag '$IMAGE_TAG'."
-            exit "$EXIT_STATUS"
-          fi
+          echo "Building image: $IMAGE_TAG"
 
-      - name: Push Docker image to Amazon ECR
+          docker build \
+            -t "$ECR_REPOSITORY:$IMAGE_TAG" .
+
+      # 6. Push Docker image to ECR
+      - name: Push image
         env:
           IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
         run: |
-          set -euo pipefail
-
-          echo "::group::Push Docker image $IMAGE_TAG to Amazon ECR"
-          if docker tag \
+          docker tag \
             "$ECR_REPOSITORY:$IMAGE_TAG" \
-            "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
-            && docker tag \
-            "$ECR_REPOSITORY:$IMAGE_TAG" \
-            "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
-            && docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
-            && docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"; then
-            echo "::endgroup::"
-            echo "Pushed image tags:"
-            echo "  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-            echo "  $ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::Docker image tagging or push failed for '$IMAGE_TAG'."
-            exit "$EXIT_STATUS"
-          fi
+            "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
+          docker tag \
+            "$ECR_REPOSITORY:$IMAGE_TAG" \
+            "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+          echo "Pushing image to ECR..."
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+          echo "Successfully pushed:"
+          echo "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      # 7. Discover the deployment EC2 instance by tag
       - name: Find deployment EC2 instance
         id: instance
         run: |
           set -euo pipefail
 
-          echo "::group::Discover deployment EC2 instance"
-          if INSTANCE_IDS_JSON=$(aws ec2 describe-instances \
+          INSTANCE_IDS=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Name,Values=upwatch web server" \
               "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId" \
-            --output json); then
-            INSTANCE_IDS_TEXT=$(jq -r '.[]' <<< "$INSTANCE_IDS_JSON")
-            INSTANCE_IDS=()
-            if [[ -n "$INSTANCE_IDS_TEXT" ]]; then
-              mapfile -t INSTANCE_IDS <<< "$INSTANCE_IDS_TEXT"
-            fi
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::AWS could not discover the running deployment instance."
-            exit "$EXIT_STATUS"
-          fi
+            --output json)
+
+          mapfile -t INSTANCE_IDS < <(jq -r '.[]' <<< "$INSTANCE_IDS")
 
           if [[ "${#INSTANCE_IDS[@]}" -ne 1 ]]; then
-            echo "::endgroup::"
-            echo "::error::Expected exactly one running EC2 instance tagged Name=upwatch web server; found ${#INSTANCE_IDS[@]}."
+            echo "Expected exactly one running EC2 instance tagged Name=upwatch web server; found ${#INSTANCE_IDS[@]}."
             exit 1
           fi
 
           echo "instance_id=${INSTANCE_IDS[0]}" >> "$GITHUB_OUTPUT"
-          echo "::endgroup::"
           echo "Found deployment instance: ${INSTANCE_IDS[0]}"
 
+      # 8. Deploy to EC2 through AWS Systems Manager
       - name: Start deployment on EC2 via SSM
         id: deploy
         env:
@@ -156,154 +119,63 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "::group::Start SSM deployment"
-          echo "Target EC2 instance: $EC2_INSTANCE_ID"
-          echo "Docker image tag: $IMAGE_TAG"
+          echo "Deploying image: $IMAGE_TAG"
 
           COMMAND="sudo -u ubuntu -- env IMAGE_TAG='$IMAGE_TAG' make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG='$IMAGE_TAG'"
 
           PARAMETERS=$(jq -n --arg command "$COMMAND" \
             '{commands: [$command]}')
 
-          if COMMAND_ID=$(aws ssm send-command \
+          COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy uptime-watch image $IMAGE_TAG" \
             --parameters "$PARAMETERS" \
             --query "Command.CommandId" \
-            --output text); then
-            echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
-            echo "SSM command ID: $COMMAND_ID"
-            echo "::endgroup::"
-          else
-            EXIT_STATUS=$?
-            echo "::endgroup::"
-            echo "::error::Failed to start SSM deployment on EC2 instance $EC2_INSTANCE_ID."
-            exit "$EXIT_STATUS"
-          fi
+            --output text)
 
-      - name: Wait for deployment and report result
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command ID: $COMMAND_ID"
+
+      # 9. Wait for deployment and report its result
+      - name: Wait for deployment
         env:
           EC2_INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
           COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
-          IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
         run: |
           set -euo pipefail
 
-          echo "::group::Wait for SSM deployment and collect output"
-          echo "Deployment target: $EC2_INSTANCE_ID"
-          echo "SSM command ID: $COMMAND_ID"
-          echo "Waiting up to 10 minutes for the SSM command to finish."
-
+          # Wait for the command to finish (up to 10 minutes).
           STATUS=""
-          PREVIOUS_STATUS=""
-          COMPLETED=false
 
           for attempt in $(seq 1 60); do
-            if STATUS=$(aws ssm get-command-invocation \
+            STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$EC2_INSTANCE_ID" \
               --query "Status" \
-              --output text 2>&1); then
-              :
-            else
-              AWS_EXIT_STATUS=$?
-              if [[ "$STATUS" == *"InvocationDoesNotExist"* ]]; then
-                STATUS="Pending"
-                if (( attempt == 1 )); then
-                  echo "::notice::SSM has not registered the command invocation yet; continuing to poll."
-                fi
-              else
-                printf '%s\n' "$STATUS" >&2
-                echo "::endgroup::"
-                echo "::error::Could not retrieve SSM invocation status (AWS CLI exit code: $AWS_EXIT_STATUS)."
-                exit "$AWS_EXIT_STATUS"
-              fi
-            fi
+              --output text 2>/dev/null || true)
 
-            if [[ "$STATUS" != "$PREVIOUS_STATUS" ]]; then
-              echo "SSM status: ${STATUS:-Pending} (attempt $attempt/60)"
-              PREVIOUS_STATUS="$STATUS"
-            fi
+            echo "Deployment status: ${STATUS:-Pending}"
 
             case "$STATUS" in
-              Success|Failed|TimedOut|Cancelled|Cancelling|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
-                COMPLETED=true
+              Success|Failed|TimedOut|Cancelled|Cancelling)
                 break
                 ;;
             esac
 
-            if (( attempt < 60 )); then
-              sleep 10
-            fi
+            sleep 10
           done
 
-          if [[ "$COMPLETED" != true ]]; then
-            echo "::error::SSM deployment did not reach a terminal state within 10 minutes (last status: ${STATUS:-Pending})."
-          fi
-
-          OUTPUT_RETRIEVAL_FAILED=false
-          if STANDARD_OUTPUT=$(aws ssm get-command-invocation \
+          # Retrieve deployment output.
+          aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$EC2_INSTANCE_ID" \
-            --query "StandardOutputContent" \
-            --output text); then
-            echo "Standard output:"
-            if [[ -n "$STANDARD_OUTPUT" && "$STANDARD_OUTPUT" != "None" ]]; then
-              printf '%s\n' "$STANDARD_OUTPUT"
-            else
-              echo "(no standard output)"
-            fi
-          else
-            OUTPUT_RETRIEVAL_FAILED=true
-            echo "::warning::Could not retrieve SSM standard output."
-          fi
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
 
-          if STANDARD_ERROR=$(aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$EC2_INSTANCE_ID" \
-            --query "StandardErrorContent" \
-            --output text); then
-            echo "Standard error:"
-            if [[ -n "$STANDARD_ERROR" && "$STANDARD_ERROR" != "None" ]]; then
-              printf '%s\n' "$STANDARD_ERROR"
-            else
-              echo "(no standard error output)"
-            fi
-          else
-            OUTPUT_RETRIEVAL_FAILED=true
-            echo "::warning::Could not retrieve SSM standard error output."
-          fi
-          echo "::endgroup::"
-
-          if [[ "$STATUS" != "Success" || "$COMPLETED" != true ]]; then
-            RESULT="Failure"
-            echo "::error::Deployment failed or could not be fully verified (final SSM status: ${STATUS:-Pending})."
-          else
-            RESULT="Success"
-            echo "Deployment completed successfully."
-          fi
-
-          if [[ "$OUTPUT_RETRIEVAL_FAILED" == true ]]; then
-            OUTPUT_RETRIEVED="No"
-          else
-            OUTPUT_RETRIEVED="Yes"
-          fi
-
-          {
-            echo "## Deployment summary"
-            echo
-            echo "| Detail | Value |"
-            echo "| --- | --- |"
-            echo "| Result | $RESULT |"
-            echo "| Commit | $GITHUB_SHA |"
-            echo "| Docker image tag | $IMAGE_TAG |"
-            echo "| EC2 instance | $EC2_INSTANCE_ID |"
-            echo "| SSM command ID | $COMMAND_ID |"
-            echo "| SSM status | ${STATUS:-Pending} |"
-            echo "| Output retrieved | $OUTPUT_RETRIEVED |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [[ "$RESULT" != "Success" ]]; then
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "Deployment failed or timed out. Final status: $STATUS"
             exit 1
           fi
+
+          echo "Deployment completed successfully."
