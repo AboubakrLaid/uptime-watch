@@ -54,6 +54,10 @@ if [[ "$1" == "inspect" ]]; then
   fi
 
   IFS='|' read -r image_id _ < "$MOCK_CURRENT_IMAGE_FILE"
+  if [[ "$format" == "{{.Image}}" ]]; then
+    printf '%s\n' "$image_id"
+    exit 0
+  fi
   if [[ "$image_id" == "$MOCK_NEW_IMAGE_ID" && "${MOCK_FAIL_NEW_HEALTH:-no}" == "yes" ]]; then
     printf 'unhealthy\n'
   elif [[ "$image_id" == "$MOCK_PREVIOUS_IMAGE_ID" && "${MOCK_FAIL_ROLLBACK_HEALTH:-no}" == "yes" ]]; then
@@ -100,6 +104,9 @@ case "$operation" in
       fi
       printf '%s|%s\n' "$MOCK_PREVIOUS_IMAGE_ID" "$APP_IMAGE" > "$MOCK_CURRENT_IMAGE_FILE"
     else
+      if [[ "${MOCK_FAIL_STAGE:-}" == "up" ]]; then
+        exit 33
+      fi
       printf '%s|%s\n' "$MOCK_NEW_IMAGE_ID" "$APP_IMAGE" > "$MOCK_CURRENT_IMAGE_FILE"
     fi
     ;;
@@ -240,6 +247,22 @@ assert_contains "$MOCK_COMMAND_LOG" "nginx"
 IFS='|' read -r current_id _ < "$MOCK_CURRENT_IMAGE_FILE"
 [[ "$current_id" == "$NEW_IMAGE_ID" ]] || fail "success did not leave the new image running"
 [[ "$(<"$MOCK_STATIC_DIR/site.css")" == "new static content" ]] || fail "success did not collect static files"
+
+reset_case start-failure-before-static
+MOCK_FAIL_STAGE="up"
+if run_deploy; then
+  fail "container start failure unexpectedly exited successfully"
+else
+  status=$?
+fi
+[[ "$status" -eq 33 ]] || fail "container start failure did not preserve its original status"
+assert_contains "$OUTPUT_FILE" "ROLLBACK_OUTCOME=succeeded"
+assert_contains "$OUTPUT_FILE" "APP_RESTORE_OUTCOME=succeeded"
+assert_contains "$OUTPUT_FILE" "STATIC_RESTORE_OUTCOME=not_needed"
+assert_contains "$OUTPUT_FILE" "Static-file restoration not needed"
+assert_contains "$OUTPUT_FILE" "RESTORED_IMAGE_REFERENCE=$PREVIOUS_IMAGE_REFERENCE"
+IFS='|' read -r current_id _ < "$MOCK_CURRENT_IMAGE_FILE"
+[[ "$current_id" == "$PREVIOUS_IMAGE_ID" ]] || fail "startup failure did not restore the previous image"
 
 reset_case rollback-success
 MOCK_FAIL_STAGE="collectstatic"

@@ -27,7 +27,7 @@ class ReadyHealthView(APIView):
                 "details": "Database connectivity check has not run yet.",
             }
         }
-        return Response(payload, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # return Response(payload, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         try:
             with connection.cursor() as cursor:

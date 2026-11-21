@@ -30,8 +30,11 @@ ATTEMPTED_IMAGE=""
 PREVIOUS_IMAGE_ID=""
 PREVIOUS_IMAGE_REFERENCE=""
 RESTORED_IMAGE_REFERENCE=""
+APP_RESTORE_OUTCOME="not_attempted"
+STATIC_RESTORE_OUTCOME="not_needed"
 FAILURE_STAGE=""
 FAILURE_STATUS=0
+STATIC_MUTATION_STARTED="no"
 
 emit_deployment_summary() {
   printf 'DEPLOYMENT_OUTCOME=%s\n' "$DEPLOYMENT_OUTCOME"
@@ -41,6 +44,8 @@ emit_deployment_summary() {
   printf 'PREVIOUS_IMAGE_ID=%s\n' "$PREVIOUS_IMAGE_ID"
   printf 'PREVIOUS_IMAGE_REFERENCE=%s\n' "$PREVIOUS_IMAGE_REFERENCE"
   printf 'RESTORED_IMAGE_REFERENCE=%s\n' "$RESTORED_IMAGE_REFERENCE"
+  printf 'APP_RESTORE_OUTCOME=%s\n' "$APP_RESTORE_OUTCOME"
+  printf 'STATIC_RESTORE_OUTCOME=%s\n' "$STATIC_RESTORE_OUTCOME"
   printf 'FAILURE_STAGE=%s\n' "$FAILURE_STAGE"
   printf 'FAILURE_STATUS=%s\n' "$FAILURE_STATUS"
 }
@@ -416,6 +421,7 @@ run_new_deployment() {
 
   CURRENT_STAGE="collect static files"
   echo "Collecting static files..."
+  STATIC_MUTATION_STARTED="yes"
   docker compose -f "$COMPOSE_FILE" exec -T "$APP_SERVICE" python manage.py collectstatic --clear --no-input || return $?
 
   CURRENT_STAGE="verify Django readiness"
@@ -444,9 +450,15 @@ handle_deployment_failure() {
   if (( PREVIOUS_IMAGE_AVAILABLE == 0 )); then
     ROLLBACK_ATTEMPTED="no"
     ROLLBACK_OUTCOME="unavailable"
+    APP_RESTORE_OUTCOME="unavailable"
     echo "ROLLBACK UNAVAILABLE: no previous application image was recorded." >&2
-    if ! restore_static_snapshot; then
-      echo "Static-file restoration also failed; the deployed static directory may be incomplete." >&2
+    if [[ "$STATIC_MUTATION_STARTED" == "yes" ]]; then
+      if restore_static_snapshot; then
+        STATIC_RESTORE_OUTCOME="succeeded"
+      else
+        STATIC_RESTORE_OUTCOME="failed"
+        echo "Static-file restoration also failed; the deployed static directory may be incomplete." >&2
+      fi
     fi
     emit_deployment_summary
     exit "$FAILURE_STATUS"
@@ -456,39 +468,70 @@ handle_deployment_failure() {
   ROLLBACK_OUTCOME="failed"
   ROLLBACK_IMAGE_REF="${ECR_REGISTRY}/${ECR_REPOSITORY}:rollback-${PREVIOUS_IMAGE_ID#sha256:}"
   ROLLBACK_FAILURES=()
+  APP_RESTORE_FAILURES=()
+  ROLLBACK_START_SUCCEEDED="no"
 
   echo "Attempting rollback to recorded image ID: $PREVIOUS_IMAGE_ID"
   echo "Rollback Compose image reference: $ROLLBACK_IMAGE_REF"
 
-  if ! restore_static_snapshot; then
-    ROLLBACK_FAILURES+=("static-file restore failed")
+  if [[ "$STATIC_MUTATION_STARTED" == "yes" ]]; then
+    if restore_static_snapshot; then
+      STATIC_RESTORE_OUTCOME="succeeded"
+    else
+      STATIC_RESTORE_OUTCOME="failed"
+      ROLLBACK_FAILURES+=("static-file restore failed")
+    fi
+  else
+    STATIC_RESTORE_OUTCOME="not_needed"
+    echo "Static-file restoration not needed; collectstatic was not started."
   fi
 
   if docker image tag "$PREVIOUS_IMAGE_ID" "$ROLLBACK_IMAGE_REF"; then
     APP_IMAGE="$ROLLBACK_IMAGE_REF"
     export APP_IMAGE
     if docker compose -f "$COMPOSE_FILE" up -d; then
+      ROLLBACK_START_SUCCEEDED="yes"
       echo "Compose started the recorded previous application image."
     else
+      APP_RESTORE_FAILURES+=("Compose failed to start the recorded previous application image")
       ROLLBACK_FAILURES+=("Compose failed to start the recorded previous application image")
     fi
   else
+    APP_RESTORE_FAILURES+=("could not tag the recorded previous application image")
     ROLLBACK_FAILURES+=("could not tag the recorded previous application image")
   fi
 
   if ! wait_for_app_health; then
+    APP_RESTORE_FAILURES+=("Django readiness verification failed")
     ROLLBACK_FAILURES+=("Django readiness verification failed")
   fi
   if ! verify_nginx_health; then
+    APP_RESTORE_FAILURES+=("Nginx health verification failed")
     ROLLBACK_FAILURES+=("Nginx health verification failed")
   fi
   if ! verify_public_health; then
+    APP_RESTORE_FAILURES+=("public HTTPS readiness verification failed")
     ROLLBACK_FAILURES+=("public HTTPS readiness verification failed")
+  fi
+
+  CURRENT_APP_IMAGE_ID=""
+  if CURRENT_APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$APP_SERVICE" 2>/dev/null)" &&
+    [[ "$CURRENT_APP_IMAGE_ID" == "$PREVIOUS_IMAGE_ID" ]]; then
+    echo "Verified running app image ID: $CURRENT_APP_IMAGE_ID"
+  else
+    APP_RESTORE_FAILURES+=("running app image ID does not match the recorded previous image")
+    ROLLBACK_FAILURES+=("running app image ID does not match the recorded previous image")
+  fi
+
+  if [[ "$ROLLBACK_START_SUCCEEDED" == "yes" ]] && (( ${#APP_RESTORE_FAILURES[@]} == 0 )); then
+    APP_RESTORE_OUTCOME="succeeded"
+    RESTORED_IMAGE_REFERENCE="$PREVIOUS_IMAGE_REFERENCE"
+  else
+    APP_RESTORE_OUTCOME="failed"
   fi
 
   if (( ${#ROLLBACK_FAILURES[@]} == 0 )); then
     ROLLBACK_OUTCOME="succeeded"
-    RESTORED_IMAGE_REFERENCE="$PREVIOUS_IMAGE_REFERENCE"
     echo "ROLLBACK SUCCEEDED: restored image reference '$PREVIOUS_IMAGE_REFERENCE' (ID $PREVIOUS_IMAGE_ID)."
     emit_deployment_summary
     exit "$FAILURE_STATUS"

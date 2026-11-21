@@ -57,6 +57,8 @@ jobs:
           PREVIOUS_IMAGE_REFERENCE=""
           PREVIOUS_IMAGE_ID=""
           RESTORED_IMAGE_REFERENCE=""
+          APP_RESTORE_OUTCOME="unknown"
+          STATIC_RESTORE_OUTCOME="unknown"
           FAILURE_STAGE=""
           FAILURE_STATUS=""
 
@@ -68,6 +70,8 @@ jobs:
             PREVIOUS_IMAGE_REFERENCE=$(jq -r '.previous_image_reference // ""' "$SUMMARY_FILE")
             PREVIOUS_IMAGE_ID=$(jq -r '.previous_image_id // ""' "$SUMMARY_FILE")
             RESTORED_IMAGE_REFERENCE=$(jq -r '.restored_image_reference // ""' "$SUMMARY_FILE")
+            APP_RESTORE_OUTCOME=$(jq -r '.app_restore_outcome // "unknown"' "$SUMMARY_FILE")
+            STATIC_RESTORE_OUTCOME=$(jq -r '.static_restore_outcome // "unknown"' "$SUMMARY_FILE")
             FAILURE_STAGE=$(jq -r '.failure_stage // ""' "$SUMMARY_FILE")
             FAILURE_STATUS=$(jq -r '.failure_status // ""' "$SUMMARY_FILE")
           else
@@ -105,7 +109,13 @@ jobs:
               CURRENT_PRODUCTION_STATE="rolled back to the previous image and verified"
               ;;
             deployment_failed:yes:failed)
-              CURRENT_PRODUCTION_STATE="rollback verification failed; current version is uncertain"
+              if [[ "$APP_RESTORE_OUTCOME" == "succeeded" && "$STATIC_RESTORE_OUTCOME" == "failed" ]]; then
+                CURRENT_PRODUCTION_STATE="previous app restored and health-verified; static-file restoration failed"
+              elif [[ "$APP_RESTORE_OUTCOME" == "succeeded" ]]; then
+                CURRENT_PRODUCTION_STATE="previous app restored and health-verified; another rollback check failed"
+              else
+                CURRENT_PRODUCTION_STATE="rollback verification failed; current version is uncertain"
+              fi
               ;;
             deployment_failed:no:unavailable)
               CURRENT_PRODUCTION_STATE="no previous image was available to restore"
@@ -124,9 +134,10 @@ jobs:
             PREVIOUS_IMAGE_DETAILS="${PREVIOUS_IMAGE_REFERENCE:-none recorded}"
           fi
 
-          BODY=$(printf 'Pipeline result: %s\nDeployment outcome: %s\nRollback attempted: %s\nRollback outcome: %s\nCurrent production state: %s\nAttempted image: %s\nPrevious production image: %s\nRestored production image: %s\nFailure stage: %s\nFailure status: %s\nRepository: %s\nBranch: %s\nCommit: %s\nRun: %s\n' \
+          BODY=$(printf 'Pipeline result: %s\nDeployment outcome: %s\nRollback attempted: %s\nRollback outcome: %s\nApp restore verification: %s\nStatic-file restore: %s\nCurrent production state: %s\nAttempted image: %s\nPrevious production image: %s\nRestored production image: %s\nFailure stage: %s\nFailure status: %s\nRepository: %s\nBranch: %s\nCommit: %s\nRun: %s\n' \
             "$PIPELINE_RESULT" "$DEPLOYMENT_OUTCOME" "$ROLLBACK_ATTEMPTED" \
-            "$ROLLBACK_OUTCOME" "$CURRENT_PRODUCTION_STATE" "${ATTEMPTED_IMAGE:-unknown}" "$PREVIOUS_IMAGE_DETAILS" \
+            "$ROLLBACK_OUTCOME" "$APP_RESTORE_OUTCOME" "$STATIC_RESTORE_OUTCOME" \
+            "$CURRENT_PRODUCTION_STATE" "${ATTEMPTED_IMAGE:-unknown}" "$PREVIOUS_IMAGE_DETAILS" \
             "$CURRENT_PRODUCTION_IMAGE" "${FAILURE_STAGE:-none}" "${FAILURE_STATUS:-none}" \
             "$GITHUB_REPOSITORY" "$PIPELINE_BRANCH" "$PIPELINE_COMMIT" "$PIPELINE_RUN_URL")
           CONTENT=$(jq -n \
