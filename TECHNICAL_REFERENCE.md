@@ -888,7 +888,12 @@ permissions:
   contents: read
 ```
 
-It obtains temporary AWS credentials using `aws-actions/configure-aws-credentials@v4`. This avoids storing long-lived AWS access keys in GitHub Secrets.
+  The deployment-notification workflow also grants the narrowly scoped GitHub
+  Actions `actions: read` permission so it can download the deployment summary
+  artifact from the completed build run. This is a GitHub token permission; it
+  does not change the AWS IAM policy.
+
+  It obtains temporary AWS credentials using `aws-actions/configure-aws-credentials@v4`. This avoids storing long-lived AWS access keys in GitHub Secrets.
 
 The role has the custom policy `uptime-watch-github-actions-ssm` for invoking `AWS-RunShellScript` on the deployment instance and reading command results with `ssm:GetCommandInvocation`. The workflow also discovers the instance by calling `ec2:DescribeInstances`, so the role must be authorized for that API. Its ECR permissions support image publishing. These are separate responsibilities from the EC2 instance role, which is used to pull the image.
 
@@ -926,9 +931,17 @@ SSM does not start commands in the repository directory, so `make -C` specifies 
 ./deploy.sh --image-tag "$IMAGE_TAG"
 ```
 
-The `deploy.sh` script validates the image tag, checks its prerequisites, authenticates Docker to ECR using the EC2 instance role, verifies that the image exists, and deploys it with the production Compose configuration. It then runs Django migrations and collects static files.
+The `deploy.sh` script validates the image tag, checks its prerequisites, authenticates Docker to ECR using the EC2 instance role, and verifies that the requested versioned image exists. Before changing the app, it records the running container's Docker image ID and configured image reference. The image ID is the rollback identity; rollback does not use the mutable `latest` tag. The script runs the requested image through the production Compose configuration, performs migrations and static collection, then verifies Django readiness, Nginx health, and public HTTPS readiness.
 
-The GitHub Actions workflow polls the SSM command for up to ten minutes, retrieves its standard output and error, and fails if the command does not finish with `Success`. This makes a failed remote deployment fail the workflow rather than appear successful.
+If a deployment operation or verification fails, the script restores the captured image ID through a local rollback reference and repeats all three health checks. It reports separately whether deployment succeeded, deployment failed but rollback succeeded, or both deployment and rollback failed. It preserves the original failing stage/status and does not reverse database migrations.
+
+Database rollback is intentionally application-only. Production migrations must use expand-and-contract practices so the previously deployed code remains compatible with the schema during the rollback window. A migration failure can leave schema changes that prevent the old app from becoming healthy; RDS point-in-time recovery remains a separate operator-led recovery process, not an automatic migration reversal.
+
+The app and Nginx share the host `staticfiles` directory. Since `collectstatic --clear` can remove assets used by the prior app, the deploy script snapshots that directory before the deployment transaction and restores it on failure. The snapshot is discarded only after a fully verified deployment. Static publication is not an atomic switch, so assets may be temporarily inconsistent while collection is running.
+
+The Makefile acquires a per-host `flock` before refreshing the shared checkout and holds it through deployment or rollback. Direct `deploy.sh` invocation uses the same lock. A concurrent deployment fails clearly without modifying the checkout or production containers.
+
+The GitHub Actions workflow polls SSM for up to 61 minutes, matching the explicit one-hour SSM execution timeout plus a short reporting grace period. It retrieves SSM stdout/stderr and fails unless the command reports `Success`. The deploy workflow uploads a small, non-secret JSON summary artifact even when the deployment fails. The separate notification workflow downloads that artifact and includes deployment outcome, rollback status, and the restored image in the existing SES email. If the artifact is missing or incomplete, the email reports rollback status as unavailable instead of assuming success.
 
 #### 6. Component responsibilities and security boundaries
 
@@ -1011,7 +1024,7 @@ Both SES workflows use GitHub's OIDC integration and the existing `uptime-watch-
 The project has two related workflows:
 
 - `.github/workflows/ses-test.yml` is manually started with `workflow_dispatch`. It sends a test email from `alerts@upwatch.live` to the Actions variable `SES_TEST_RECIPIENT`.
-- `.github/workflows/deployment-notification.yml` runs when the “Push and Build Back” workflow completes on `main`. It sends a success or failure notification with the branch, commit, and run link. It uses `SES_NOTIFICATION_RECIPIENT` when set, otherwise falls back to `SES_TEST_RECIPIENT`.
+- `.github/workflows/deployment-notification.yml` runs when the “Push and Build Back” workflow completes on `main`. It sends one success or failure notification with the branch, commit, and run link, plus the deployment outcome and whether rollback was attempted and succeeded. When rollback succeeds, the email names the restored production image; when rollback fails or result data is unavailable, the email says so explicitly. It uses `SES_NOTIFICATION_RECIPIENT` when set, otherwise falls back to `SES_TEST_RECIPIENT`.
 
 GitHub Actions variables keep the destination address out of the workflow source. They are configuration values rather than AWS credentials; the role's IAM policy and SES's identity/sandbox checks still control whether sending is allowed.
 
