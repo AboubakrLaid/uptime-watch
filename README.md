@@ -119,3 +119,15 @@ The application is a small website-availability tracking service, inspired by to
 - Keeps notification logic separate from deployment steps.
 
 ![Uptime Watch deployment succeeded](pics/Uptime%20Watch%20deployment%20succeeded.png)
+
+### 13. Deployment reliability and automatic rollback — 2026-11-21
+
+- Trace: [snapshot at 8ee3913](https://github.com/AboubakrLaid/uptime-watch/tree/8ee3913)
+- Checks Django readiness, local Nginx health, and public HTTPS health to confirm that a deployment is reliable.
+- When a deployment step or health check fails, the deployment script uses the older application image and restores static files from the pre-deployment snapshot if `collectstatic` has started.
+- The rollback is application-level only: it does not restore Amazon RDS or reverse database migrations.
+- Reports the deployment outcome and rollback result in an SES email.
+
+| Docker images retained for rollback | Deployment failure and successful rollback |
+| --- | --- |
+| <img src="pics/terminal-proof.png" alt="Docker images retained for rollback" width="400"> | <img src="pics/Uptime%20Watch%20deployment%20failed;%20rollback%20succeeded.png" alt="Uptime Watch deployment failed; rollback succeeded" width="400"> |
