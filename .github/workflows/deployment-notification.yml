@@ -12,6 +12,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: read
 
 jobs:
   send-notification:
@@ -23,6 +24,15 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::373080580380:role/uptime-watch-github-actions
           aws-region: eu-west-3
+
+      - name: Download deployment summary
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: deployment-summary
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/deployment-summary
 
       - name: Send pipeline result through SES
         env:
@@ -39,15 +49,86 @@ jobs:
             exit 1
           fi
 
-          if [[ "$PIPELINE_RESULT" == "success" ]]; then
-            SUBJECT="Uptime Watch deployment succeeded"
+          SUMMARY_FILE="$RUNNER_TEMP/deployment-summary/summary.json"
+          DEPLOYMENT_OUTCOME="unavailable"
+          ROLLBACK_ATTEMPTED="unknown"
+          ROLLBACK_OUTCOME="unknown"
+          ATTEMPTED_IMAGE=""
+          PREVIOUS_IMAGE_REFERENCE=""
+          PREVIOUS_IMAGE_ID=""
+          RESTORED_IMAGE_REFERENCE=""
+          FAILURE_STAGE=""
+          FAILURE_STATUS=""
+
+          if [[ -f "$SUMMARY_FILE" ]] && jq -e 'type == "object"' "$SUMMARY_FILE" > /dev/null; then
+            DEPLOYMENT_OUTCOME=$(jq -r '.deployment_outcome // "unknown"' "$SUMMARY_FILE")
+            ROLLBACK_ATTEMPTED=$(jq -r '.rollback_attempted // "unknown"' "$SUMMARY_FILE")
+            ROLLBACK_OUTCOME=$(jq -r '.rollback_outcome // "unknown"' "$SUMMARY_FILE")
+            ATTEMPTED_IMAGE=$(jq -r '.attempted_image // ""' "$SUMMARY_FILE")
+            PREVIOUS_IMAGE_REFERENCE=$(jq -r '.previous_image_reference // ""' "$SUMMARY_FILE")
+            PREVIOUS_IMAGE_ID=$(jq -r '.previous_image_id // ""' "$SUMMARY_FILE")
+            RESTORED_IMAGE_REFERENCE=$(jq -r '.restored_image_reference // ""' "$SUMMARY_FILE")
+            FAILURE_STAGE=$(jq -r '.failure_stage // ""' "$SUMMARY_FILE")
+            FAILURE_STATUS=$(jq -r '.failure_status // ""' "$SUMMARY_FILE")
           else
-            SUBJECT="Uptime Watch deployment failed"
+            echo "Deployment summary artifact is unavailable; rollback status cannot be confirmed."
           fi
 
-          BODY=$(printf 'Pipeline result: %s\nRepository: %s\nBranch: %s\nCommit: %s\nRun: %s\n' \
-            "$PIPELINE_RESULT" "$GITHUB_REPOSITORY" "$PIPELINE_BRANCH" \
-            "$PIPELINE_COMMIT" "$PIPELINE_RUN_URL")
+          case "$DEPLOYMENT_OUTCOME:$ROLLBACK_ATTEMPTED:$ROLLBACK_OUTCOME" in
+            deployment_succeeded:no:not_attempted)
+              SUBJECT="Uptime Watch deployment succeeded"
+              ;;
+            deployment_failed:yes:succeeded)
+              SUBJECT="Uptime Watch deployment failed; rollback succeeded"
+              ;;
+            deployment_failed:yes:failed)
+              SUBJECT="Uptime Watch deployment and rollback failed"
+              ;;
+            deployment_failed:no:unavailable)
+              SUBJECT="Uptime Watch deployment failed; rollback unavailable"
+              ;;
+            *)
+              if [[ "$PIPELINE_RESULT" == "success" ]]; then
+                SUBJECT="Uptime Watch deployment succeeded"
+              else
+                SUBJECT="Uptime Watch deployment failed"
+              fi
+              ;;
+          esac
+
+          CURRENT_PRODUCTION_IMAGE="${RESTORED_IMAGE_REFERENCE:-unknown}"
+          case "$DEPLOYMENT_OUTCOME:$ROLLBACK_ATTEMPTED:$ROLLBACK_OUTCOME" in
+            deployment_succeeded:no:not_attempted)
+              CURRENT_PRODUCTION_STATE="new deployment verified; no rollback"
+              ;;
+            deployment_failed:yes:succeeded)
+              CURRENT_PRODUCTION_STATE="rolled back to the previous image and verified"
+              ;;
+            deployment_failed:yes:failed)
+              CURRENT_PRODUCTION_STATE="rollback verification failed; current version is uncertain"
+              ;;
+            deployment_failed:no:unavailable)
+              CURRENT_PRODUCTION_STATE="no previous image was available to restore"
+              ;;
+            deployment_failed:no:not_attempted)
+              CURRENT_PRODUCTION_STATE="deployment did not start; production was unchanged"
+              ;;
+            *)
+              CURRENT_PRODUCTION_STATE="deployment state unavailable"
+              ;;
+          esac
+
+          if [[ -n "$PREVIOUS_IMAGE_ID" ]]; then
+            PREVIOUS_IMAGE_DETAILS="${PREVIOUS_IMAGE_REFERENCE:-unknown} (Docker image ID $PREVIOUS_IMAGE_ID)"
+          else
+            PREVIOUS_IMAGE_DETAILS="${PREVIOUS_IMAGE_REFERENCE:-none recorded}"
+          fi
+
+          BODY=$(printf 'Pipeline result: %s\nDeployment outcome: %s\nRollback attempted: %s\nRollback outcome: %s\nCurrent production state: %s\nAttempted image: %s\nPrevious production image: %s\nRestored production image: %s\nFailure stage: %s\nFailure status: %s\nRepository: %s\nBranch: %s\nCommit: %s\nRun: %s\n' \
+            "$PIPELINE_RESULT" "$DEPLOYMENT_OUTCOME" "$ROLLBACK_ATTEMPTED" \
+            "$ROLLBACK_OUTCOME" "$CURRENT_PRODUCTION_STATE" "${ATTEMPTED_IMAGE:-unknown}" "$PREVIOUS_IMAGE_DETAILS" \
+            "$CURRENT_PRODUCTION_IMAGE" "${FAILURE_STAGE:-none}" "${FAILURE_STATUS:-none}" \
+            "$GITHUB_REPOSITORY" "$PIPELINE_BRANCH" "$PIPELINE_COMMIT" "$PIPELINE_RUN_URL")
           CONTENT=$(jq -n \
             --arg subject "$SUBJECT" \
             --arg body "$BODY" \
