@@ -34,6 +34,8 @@ jobs:
               previous_image_id: "",
               previous_image_reference: "",
               restored_image_reference: "",
+              app_restore_outcome: "not_attempted",
+              static_restore_outcome: "not_needed",
               failure_stage: "",
               failure_status: ""
             }' > "$RUNNER_TEMP/deployment-summary/summary.json"
@@ -223,6 +225,8 @@ jobs:
           PREVIOUS_IMAGE_ID=$(marker_value PREVIOUS_IMAGE_ID)
           PREVIOUS_IMAGE_REFERENCE=$(marker_value PREVIOUS_IMAGE_REFERENCE)
           RESTORED_IMAGE_REFERENCE=$(marker_value RESTORED_IMAGE_REFERENCE)
+          APP_RESTORE_OUTCOME=$(marker_value APP_RESTORE_OUTCOME)
+          STATIC_RESTORE_OUTCOME=$(marker_value STATIC_RESTORE_OUTCOME)
           FAILURE_STAGE=$(marker_value FAILURE_STAGE)
           FAILURE_STATUS=$(marker_value FAILURE_STATUS)
 
@@ -249,6 +253,8 @@ jobs:
             --arg previous_image_id "$PREVIOUS_IMAGE_ID" \
             --arg previous_image_reference "$PREVIOUS_IMAGE_REFERENCE" \
             --arg restored_image_reference "$RESTORED_IMAGE_REFERENCE" \
+            --arg app_restore_outcome "${APP_RESTORE_OUTCOME:-unknown}" \
+            --arg static_restore_outcome "${STATIC_RESTORE_OUTCOME:-unknown}" \
             --arg failure_stage "$FAILURE_STAGE" \
             --arg failure_status "$FAILURE_STATUS" \
             '.pipeline_status = $pipeline_status
@@ -259,6 +265,8 @@ jobs:
              | .previous_image_id = $previous_image_id
              | .previous_image_reference = $previous_image_reference
              | .restored_image_reference = $restored_image_reference
+             | .app_restore_outcome = $app_restore_outcome
+             | .static_restore_outcome = $static_restore_outcome
              | .failure_stage = $failure_stage
              | .failure_status = $failure_status' \
             "$SUMMARY_FILE" > "$SUMMARY_FILE.tmp"
