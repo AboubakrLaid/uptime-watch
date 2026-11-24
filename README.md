@@ -131,3 +131,10 @@ The application is a small website-availability tracking service, inspired by to
 | Docker images retained for rollback | Deployment failure and successful rollback |
 | --- | --- |
 | <img src="pics/terminal-proof.png" alt="Docker images retained for rollback" width="400"> | <img src="pics/Uptime%20Watch%20deployment%20failed;%20rollback%20succeeded.png" alt="Uptime Watch deployment failed; rollback succeeded" width="400"> |
+
+### 14. Terraform infrastructure as code — 2026-11-24
+
+- Trace: [snapshot at 2858dfe](https://github.com/AboubakrLaid/uptime-watch/tree/2858dfe)
+- Started with bootstrap configuration to initialize local Terraform state.
+- Moved the state to an encrypted S3 backend, then wrote configuration for the existing AWS infrastructure.
+- Imported the live resources into Terraform state and reconciled the configuration until the plan reported no changes.
