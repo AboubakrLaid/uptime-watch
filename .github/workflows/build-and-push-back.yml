@@ -141,7 +141,8 @@ jobs:
 
           echo "Deploying image: $IMAGE_TAG"
 
-          COMMAND="sudo -H -u ubuntu -- bash -lc 'set -euo pipefail; cd /home/ubuntu/uptime-watch; exec env IMAGE_TAG=\"$IMAGE_TAG\" make deploy IMAGE_TAG=\"$IMAGE_TAG\"'"
+          DEPLOY_LOG="/tmp/uptime-watch-ssm-deploy.log"
+          COMMAND="{ sudo -H -u ubuntu -- /bin/bash -c 'set -Eeuo pipefail; echo \"Starting deployment for image \$1\"; cd /home/ubuntu/uptime-watch; exec env IMAGE_TAG=\"\$1\" make deploy IMAGE_TAG=\"\$1\"' _ '$IMAGE_TAG'; } > '$DEPLOY_LOG' 2>&1; DEPLOY_STATUS=\$?; cat '$DEPLOY_LOG'; echo \"__DEPLOY_STATUS=\$DEPLOY_STATUS\"; exit \"\$DEPLOY_STATUS\""
 
           PARAMETERS=$(jq -n --arg command "$COMMAND" \
             '{commands: [$command], executionTimeout: ["3600"]}')
@@ -225,6 +226,9 @@ jobs:
 
           if [[ -n "$INVOCATION" ]]; then
             printf 'SSM command result:\n%s\n' "$INVOCATION"
+            if [[ -n "${STANDARD_ERROR:-}" ]]; then
+              printf 'SSM command stderr:\n%s\n' "$STANDARD_ERROR"
+            fi
           else
             echo "Could not retrieve the final SSM command output." >&2
             STANDARD_OUTPUT=""
