@@ -23,6 +23,28 @@ nginx/logs/
 # Docker local state
 *.pid
 
+# Terraform local state and sensitive configuration
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.auto.tfvars
+*.tfvars.json
+*.auto.tfvars.json
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
 # IDE/editor settings
 .idea/
 .vscode/
+
+# Personal local documentation
+/personal-docs/
