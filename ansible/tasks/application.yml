@@ -1,0 +1,35 @@
+- name: Synchronize the application repository
+  ansible.builtin.git:
+    repo: https://github.com/AboubakrLaid/uptime-watch.git
+    dest: "{{ app_dir }}"
+    version: main
+    force: true
+    update: true
+  become: true
+  become_user: "{{ app_user }}"
+
+- name: Configure application environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app_dir }}/.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy application with the existing deployment workflow
+  ansible.builtin.command:
+    argv:
+      - make
+      - -C
+      - "{{ app_dir }}"
+      - deploy
+      - "IMAGE_TAG={{ app_image_tag }}"
+  become: true
+  become_user: "{{ app_user }}"
+  register: application_deployment
+  changed_when: true
+
+- name: Show deployment result
+  ansible.builtin.debug:
+    var: application_deployment.stdout_lines

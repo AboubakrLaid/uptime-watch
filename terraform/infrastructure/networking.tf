@@ -1,12 +1,12 @@
 resource "aws_subnet" "ec2_public" {
-  vpc_id                  = "vpc-0fac56610967ebc7b"
+  vpc_id                  = var.vpc_id
   cidr_block              = "172.31.0.0/20"
   availability_zone       = "eu-west-3a"
   map_public_ip_on_launch = true
 }
 
 resource "aws_subnet" "rds_1" {
-  vpc_id                  = "vpc-0fac56610967ebc7b"
+  vpc_id                  = var.vpc_id
   cidr_block              = "172.31.48.0/25"
   availability_zone       = "eu-west-3a"
   map_public_ip_on_launch = false
@@ -17,7 +17,7 @@ resource "aws_subnet" "rds_1" {
 }
 
 resource "aws_subnet" "rds_2" {
-  vpc_id                  = "vpc-0fac56610967ebc7b"
+  vpc_id                  = var.vpc_id
   cidr_block              = "172.31.48.128/25"
   availability_zone       = "eu-west-3c"
   map_public_ip_on_launch = false
@@ -28,7 +28,7 @@ resource "aws_subnet" "rds_2" {
 }
 
 resource "aws_subnet" "rds_3" {
-  vpc_id                  = "vpc-0fac56610967ebc7b"
+  vpc_id                  = var.vpc_id
   cidr_block              = "172.31.49.0/25"
   availability_zone       = "eu-west-3b"
   map_public_ip_on_launch = false
@@ -39,11 +39,11 @@ resource "aws_subnet" "rds_3" {
 }
 
 resource "aws_internet_gateway" "uptime_watch" {
-  vpc_id = "vpc-0fac56610967ebc7b"
+  vpc_id = var.vpc_id
 }
 
 resource "aws_route_table" "main" {
-  vpc_id = "vpc-0fac56610967ebc7b"
+  vpc_id = var.vpc_id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -52,7 +52,7 @@ resource "aws_route_table" "main" {
 }
 
 resource "aws_route_table" "rds_private" {
-  vpc_id = "vpc-0fac56610967ebc7b"
+  vpc_id = var.vpc_id
 
   tags = {
     Name = "RDS-Pvt-rt"

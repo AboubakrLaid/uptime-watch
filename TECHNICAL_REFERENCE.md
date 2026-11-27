@@ -674,6 +674,57 @@ Using another security group as the source/destination is more practical than ha
 
 It is also worth noting that allowing all outbound traffic on EC2 would permit the connection as well, but an explicit outbound rule to RDS on port 5432 is more restrictive and clearer. It documents the intended database path instead of relying on a broad default.
 
+#### Terraform security-group replacement milestone — 2026-11-25
+
+The first web security group came from AWS as `launch-wizard-1`. I changed its Terraform definition to `uptime_watch` and gave it the description `Security group for the uptime_watch web server`, then added `create_before_destroy` so Terraform could replace the resource safely.
+
+```hcl
+resource "aws_security_group" "web" {
+  name        = "uptime_watch"
+  description = "Security group for the uptime_watch web server"
+  vpc_id      = "vpc-0fac56610967ebc7b"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  # ingress and egress rules
+}
+```
+
+AWS security group names and descriptions cannot be changed in place, so changing from `launch-wizard-1` to `uptime_watch` required Terraform to create a replacement and destroy the old security group. Terraform's dependency chain is:
+
+```text
+EC2 instance
+  -> ENI / network interface
+       -> security groups
+            -> old launch-wizard security group
+```
+
+AWS does not allow deletion of a security group while an ENI is still attached to it. Terraform's default replacement order tried to destroy the old security group before the EC2 instance changed its attachment. AWS returned `DependencyViolation`, and the provider continued retrying deletion because the old security group was still attached.
+
+Adding `create_before_destroy` changed the replacement order:
+
+```text
+Create the new uptime_watch security group
+  -> Update the EC2 instance to reference the new SG ID
+       -> Detach the launch-wizard security group from the ENI
+            -> Delete the old launch-wizard security group
+```
+
+I also replaced the hardcoded EC2 security group IDs with Terraform references:
+
+```hcl
+vpc_security_group_ids = [
+  aws_security_group.web.id,
+  aws_security_group.ec2_rds.id
+]
+```
+
+The references let Terraform discover the generated AWS IDs and build the dependency graph. It knows that the EC2 instance depends on `aws_security_group.web`, so the replacement SG must exist before the instance can be updated. Hardcoding the old SG ID would hide that dependency and make future replacements harder to manage.
+
+This milestone showed that Terraform lifecycle settings control resource operation order, while resource references connect dependent infrastructure so Terraform can perform that order correctly.
+
 #### 3. Testing network connectivity with Netcat
 
 `nc` is Netcat: a small utility for testing TCP and UDP connectivity to a host and port. I used it when I wanted to confirm that the RDS hostname resolved and that the database listener was reachable on PostgreSQL port 5432, without sending any SQL or application payloads.
@@ -1040,3 +1091,904 @@ GitHub Actions workflow
 ```
 
 The manual SES workflow successfully sent a test email. The domain identity is verified with Easy DKIM, and the recipient email identity is separately verified. These SES-side settings and IAM policy are configured in AWS and are not defined as infrastructure-as-code in this repository; the workflow files document the calls and configuration inputs, not the AWS resource state.
+
+---
+
+### 9. Ansible configuration management and EC2 application preparation
+
+I used Ansible to prepare a second EC2 instance so that it matched the runtime requirements of the existing Uptime Watch deployment process. The second instance was provisioned separately with Terraform, while Ansible installed and configured the software that runs on it.
+
+This section describes the repository as it was implemented during the second-instance exercise. It distinguishes the infrastructure created by Terraform from the configuration performed by Ansible and from the application release performed by the existing deployment scripts.
+
+#### 1. What Ansible is and why I used it
+
+Ansible is an agentless configuration-management and automation tool. It executes YAML playbooks from a control node and connects to managed nodes to enforce a declared state.
+
+In this project:
+
+| Responsibility | Tool |
+| --- | --- |
+| Create the EC2 instance, Elastic IP, networking, and attached IAM profile | Terraform |
+| Install operating-system packages, Docker, AWS CLI, Certbot, and application prerequisites | Ansible |
+| Pull an application image from ECR and start the Compose stack | Existing `make deploy` / `deploy.sh` workflow |
+| Build and publish the application image | GitHub Actions and Amazon ECR |
+| Perform ongoing production deployment through the established automation | GitHub Actions, SSM, `make deploy`, and `deploy.sh` |
+
+This division is important:
+
+- **Infrastructure provisioning** creates or changes cloud resources.
+- **Configuration management** makes an existing operating system converge on a required state.
+- **Application deployment** publishes and runs a particular application release.
+
+I used Ansible for the second EC2 instance because repeating all package installation and system preparation commands manually would be slower, less reviewable, and easier to perform inconsistently.
+
+##### How the communication works
+
+The control node in this exercise was my local machine. The managed node was the secondary Ubuntu EC2 instance.
+
+Ansible did not require an agent on EC2. It connected using SSH, transferred or executed the Python code needed for each task, and removed the temporary execution files afterward:
+
+```text
+Local control node
+  -> reads inventory and playbook
+  -> opens SSH connection to the secondary EC2 instance
+  -> runs Python-backed Ansible modules
+  -> reports ok, changed, skipped, or failed for each task
+```
+
+The production instance was not put in the inventory. The play targeted the new secondary host only, so running the play did not converge or modify the original EC2 instance.
+
+##### Core Ansible concepts
+
+| Term | Meaning in this project |
+| --- | --- |
+| Control node | The local computer from which Ansible commands and playbooks were run. |
+| Managed node | The secondary Ubuntu EC2 instance configured by the playbook. |
+| Inventory | The list of managed hosts, connection variables, and groups. Here it is `ansible/inventory/targets.ini`. |
+| Inventory group | A logical selection of hosts. The group is `uptime_watch_target`. |
+| Playbook | A YAML declaration of which hosts to configure and which tasks to run. Here it is `ansible/playbook.yml`. |
+| Play | The block in `playbook.yml` that targets `uptime_watch_target`, gathers facts, enables privilege escalation, and imports task files. |
+| Task | One unit of desired state, such as installing a package or starting a service. |
+| Module | The implementation behind a task, such as `ansible.builtin.apt`, `file`, `systemd`, or `user`. |
+| Variable | A value separated from task logic, such as the application directory or AWS CLI version. |
+| Fact | Information Ansible discovers about the managed host, such as the Ubuntu distribution release. |
+| Handler | A task run after being notified by another task; this implementation does not currently define handlers. |
+| `become` | Privilege escalation, configured here to use `sudo` for tasks that require root access. |
+| Vault | Ansible's encryption mechanism for sensitive variable files. |
+
+The configuration sets `become = True` globally in `ansible.cfg`, and the playbook also states `become: true`. Most installation tasks therefore run with root privileges through `sudo`. Tasks that should run as the application account explicitly switch with `become_user: ubuntu`; for example, the repository and deployment tasks run as the application user.
+
+#### 2. Project structure and file relationships
+
+The verified Ansible tree is:
+
+```text
+ansible/
+├── ansible.cfg
+├── playbook.yml
+├── inventory/
+│   └── targets.ini
+├── group_vars/
+│   ├── all.yml
+│   └── uptime_watch_target/
+│       └── vault.yml
+├── tasks/
+│   ├── system.yml
+│   ├── docker.yml
+│   ├── certbot.yml
+│   └── application.yml
+└── templates/
+    └── env.j2
+```
+
+These files have distinct roles:
+
+| File | Purpose |
+| --- | --- |
+| `ansible/ansible.cfg` | Sets the default inventory, SSH host-key behavior, retry-file behavior, Python interpreter selection, and privilege escalation defaults. |
+| `ansible/inventory/targets.ini` | Defines the `uptime_watch_target` group, host alias, EC2 address, SSH user, and SSH private-key path. |
+| `ansible/group_vars/all.yml` | Defines non-secret variables available to every inventory host. It includes user/group values, the application path, AWS region, pinned AWS CLI version, package lists, Certbot email, and image tag. |
+| `ansible/group_vars/uptime_watch_target/vault.yml` | Stores sensitive variables encrypted with Ansible Vault. Its directory name matches the inventory group, so Ansible loads it only for that group. |
+| `ansible/playbook.yml` | Selects the target group and imports the four task files in execution order. |
+| `ansible/tasks/system.yml` | Refreshes APT metadata and installs operating-system, deployment, and AWS CLI prerequisites. |
+| `ansible/tasks/docker.yml` | Configures Docker's package signing key and repository, installs Docker components, starts services, and adds the application user to the Docker group. |
+| `ansible/tasks/certbot.yml` | Installs Certbot, manages the timer, keeps the host Nginx service stopped, and conditionally requests the application certificate. |
+| `ansible/tasks/application.yml` | Synchronizes the Git repository, renders `.env`, invokes the existing `make deploy` workflow, and displays its output. |
+| `ansible/templates/env.j2` | Maps Vault variables into the runtime `.env` file expected by Docker Compose and Django. |
+
+##### How Ansible discovers the files
+
+Ansible's variable and inventory resolution depends on the working directory and the matching inventory/group names.
+
+The project commands were run from:
+
+```bash
+cd ansible
+```
+
+From that directory, `ansible.cfg` supplies:
+
+```ini
+inventory = inventory/targets.ini
+```
+
+Explicit commands also specified `-i inventory/targets.ini`. The group in that inventory is named `uptime_watch_target`; therefore:
+
+```text
+group_vars/all.yml
+```
+
+is applicable to all hosts, while:
+
+```text
+group_vars/uptime_watch_target/vault.yml
+```
+
+is applicable to hosts in `uptime_watch_target`.
+
+The playbook imports task files relative to its own directory:
+
+```yaml
+- name: Install system dependencies
+  ansible.builtin.import_tasks: tasks/system.yml
+
+- name: Install Docker and Docker Compose
+  ansible.builtin.import_tasks: tasks/docker.yml
+
+- name: Install and configure Certbot
+  ansible.builtin.import_tasks: tasks/certbot.yml
+
+- name: Prepare application directories
+  ansible.builtin.import_tasks: tasks/application.yml
+```
+
+The last task name now covers repository, environment, and deployment preparation as well; it is preserved as the existing play label.
+
+The `template` task finds `env.j2` in the playbook's `templates/` directory automatically. The task writes it to `/home/ubuntu/uptime-watch/.env`, not to the local control node.
+
+#### 3. Inventory and SSH
+
+The inventory uses an INI group:
+
+```ini
+[uptime_watch_target]
+target ansible_host=<SECONDARY_EC2_PUBLIC_IP> ansible_user=ubuntu ansible_ssh_private_key_file=/home/aboubakr-laid/.ssh/key.pem
+```
+
+The local repository contains the concrete secondary-instance Elastic IP. It is represented as a placeholder above because it is connection metadata rather than application documentation that needs to be copied into other systems.
+
+Each field has a purpose:
+
+| Field | Meaning |
+| --- | --- |
+| `[uptime_watch_target]` | Defines the host group selected by the playbook. |
+| `target` | The inventory alias used in output and ad-hoc commands. |
+| `ansible_host` | The actual public address to which SSH connects. |
+| `ansible_user=ubuntu` | Selects Ubuntu's standard SSH account for the EC2 image. |
+| `ansible_ssh_private_key_file` | Tells Ansible which local private key to use for authentication. |
+
+The key remains on the local control node under `~/.ssh/`. It must never be placed in this document, the inventory, the Vault plaintext, the repository, or an `.env` template. The inventory contains only the key's local path.
+
+OpenSSH rejects private keys with overly broad permissions. The key file used for this connection is mode `0400`. A restrictive `0600` mode is also accepted. A safe verification command is:
+
+```bash
+stat -c '%n %a' ~/.ssh/key.pem
+```
+
+If a key's permissions need correction:
+
+```bash
+chmod 400 ~/.ssh/key.pem
+```
+
+SSH behavior is different from the later production deployment model:
+
+- This one-time configuration exercise used SSH from the local control node because it was inventory-driven host preparation.
+- The existing production GitHub Actions deployment uses Systems Manager, not an SSH key, to execute commands on the production EC2 instance.
+
+`host_key_checking = False` is present in the project configuration. This was convenient for the practice instance, but it reduces SSH host authenticity checks. A stricter long-lived production setup should manage `known_hosts` entries and leave host-key checking enabled.
+
+Inventory groups are useful for selection:
+
+```bash
+ansible uptime_watch_target -m ping
+ansible all -m ping
+```
+
+In this inventory both commands select the same single host. As the fleet grows, `all` would select every managed host, while `uptime_watch_target` would remain the controlled subset selected by this playbook.
+
+#### 4. Implemented playbooks, tasks, and modules
+
+The top-level play is intentionally small:
+
+```yaml
+- name: Prepare the uptime-watch target instance
+  hosts: uptime_watch_target
+  gather_facts: true
+  become: true
+```
+
+It gathers operating-system facts and then imports the task files. `ansible_facts.distribution_release`, for example, supplies the Ubuntu release when Docker's APT repository is created.
+
+##### `apt`
+
+The `apt` module manages Debian/Ubuntu packages and package metadata.
+
+`system.yml` first refreshes APT metadata with a bounded cache lifetime:
+
+```yaml
+- name: Update APT package indexes
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+```
+
+`cache_valid_time: 3600` means a recently refreshed cache can be reused rather than reporting a change every time.
+
+The task files then ensure the package lists in `group_vars/all.yml` are present. This included:
+
+- Docker prerequisites: `ca-certificates`, `curl`, and `gnupg`
+- Deployment utilities: `git`, `make`, `wget`, `jq`, `unzip`, `util-linux`, `postgresql-client`, and `openssh-server`
+- Docker Engine and plugins after Docker's repository is available
+- Certbot and the Nginx Certbot plugin
+
+Using module package state:
+
+```yaml
+state: present
+```
+
+is idempotent: a package that is already installed does not need to be installed again.
+
+##### `file`
+
+The `file` module enforces filesystem state. The Docker tasks use it to ensure the APT keyring directory exists:
+
+```yaml
+- name: Create Docker APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+```
+
+If the directory already has the requested state and mode, Ansible reports the task as `ok` rather than `changed`.
+
+Earlier versions of the exercise created application runtime directories with `file` tasks. The current `application.yml` instead synchronizes the repository and lets the existing checkout/deployment workflow provide the application structure. The current file module use is therefore the Docker keyring directory.
+
+##### `user`
+
+The `user` module manages Unix accounts. Here it does not create a second account. It appends the existing Ubuntu user to the Docker group:
+
+```yaml
+- name: Add the application user to the Docker group
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    groups: docker
+    append: true
+```
+
+`append: true` is important because it adds Docker without replacing other group memberships. Group membership is used by later logins or processes; a user already logged in may need to reconnect before a new group membership appears in its session.
+
+##### `systemd`
+
+The `systemd` module manages services and units. It is used to:
+
+- enable and start Docker;
+- enable and start containerd;
+- enable and start `certbot.timer`;
+- keep a host-level Nginx service disabled and stopped.
+
+Example:
+
+```yaml
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+```
+
+The host Nginx service is stopped because production Nginx runs in Docker Compose:
+
+```yaml
+- name: Keep the host Nginx service disabled
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: false
+    state: stopped
+```
+
+That prevents the host package and the Compose container from competing for ports 80 and 443.
+
+##### `shell`
+
+The `shell` module is used only where a shell pipeline or multiple shell operations are needed. `system.yml` uses it to download and install a pinned AWS CLI v2 release.
+
+The task:
+
+1. creates a temporary directory;
+2. downloads the version-specific AWS CLI archive;
+3. extracts it;
+4. runs the AWS installer with `--update`;
+5. removes the temporary directory.
+
+The script uses `set -euo pipefail` and `/bin/bash`, so a failure stops the command instead of continuing in an incomplete state.
+
+It first checks `aws --version` with the `command` module and stores the result. The shell installation runs only when the command failed or did not report the configured version:
+
+```yaml
+when: >
+  target_aws_cli.rc != 0
+  or ('aws-cli/' + aws_cli_version) not in
+     ((target_aws_cli.stdout | default('')) + ' ' + (target_aws_cli.stderr | default('')))
+```
+
+`shell` is appropriate here, but package or dedicated modules should be preferred when they express the required state directly. In particular, ad-hoc `rm -rf` cleanup commands from the troubleshooting process are not part of the repeatable playbook.
+
+##### `get_url`
+
+The `get_url` module downloads files over HTTP(S). It downloads Docker's official APT signing key to:
+
+```text
+/etc/apt/keyrings/docker.asc
+```
+
+The desired mode is `0644`. This key is a public repository-signing key, not an SSH private key.
+
+##### `deb822_repository`
+
+The `deb822_repository` module manages modern APT Deb822 `.sources` configuration. It adds:
+
+- repository type: `deb`;
+- source: `https://download.docker.com/linux/ubuntu`;
+- suite: the managed node's distribution release from gathered facts;
+- component: `stable`;
+- architecture: `amd64`;
+- signing key: `/etc/apt/keyrings/docker.asc`;
+- desired state: `present`.
+
+This avoids manually editing APT source files and lets Ansible report whether the repository definition changed.
+
+##### Additional modules used
+
+The implementation also uses:
+
+| Module | Use |
+| --- | --- |
+| `ansible.builtin.command` | Read `aws --version`, request the Certbot certificate, and run `make deploy`. `command` does not invoke a shell. |
+| `ansible.builtin.git` | Synchronize the repository checkout as the `ubuntu` user. |
+| `ansible.builtin.template` | Render Vault-backed variables into `.env`. |
+| `ansible.builtin.debug` | Display the deployment command's captured stdout lines. |
+
+The Certbot command uses:
+
+```yaml
+ansible.builtin.command:
+  argv:
+    - certbot
+    - certonly
+    - --standalone
+    - --non-interactive
+    - --agree-tos
+    # ...
+```
+
+The task has:
+
+```yaml
+creates: /etc/letsencrypt/live/upwatch.live/fullchain.pem
+```
+
+That makes it a guarded command: Ansible skips the request when the referenced certificate already exists. This is a useful idempotency guard for a module that does not otherwise infer desired certificate state.
+
+#### 5. Idempotency and the Docker repository fix
+
+Idempotency means applying the same automation repeatedly has the same final effect. In an already-converged system, a second run should report no unnecessary changes.
+
+Ansible exposes this distinction in the recap:
+
+| Count | Meaning |
+| --- | --- |
+| `ok` | Tasks completed successfully without a change, or successful tasks that do not separately report as changed. |
+| `changed` | Tasks that changed the managed host or explicitly reported a change. |
+| `skipped` | Tasks whose `when` or `creates` condition prevented execution. |
+| `failed` | Tasks that ran and failed. |
+| `unreachable` | Hosts that could not be contacted, usually because of SSH, inventory, or networking problems. |
+
+The project achieved idempotency primarily with declarative state:
+
+- package modules use `state: present`;
+- the keyring directory uses `state: directory`;
+- services use `enabled` and `state`;
+- group membership uses `append`;
+- the AWS CLI installation is version-guarded;
+- the Certbot task has a `creates` guard;
+- Git and template modules detect whether content changed;
+- APT cache refreshes are bounded or conditional.
+
+##### The unconditional APT refresh problem
+
+The initial Docker task sequence exposed one idempotency issue. Adding Docker's repository and then running:
+
+```yaml
+- ansible.builtin.apt:
+    update_cache: true
+```
+
+unconditionally caused the `apt` task to report `changed` even on a later run where the repository definition was already correct.
+
+The second preparation run therefore reported:
+
+```text
+ok=18 changed=1 failed=0
+```
+
+The changing task was the Docker repository APT refresh. The fix was to capture the repository module result and run the cache refresh only when the repository actually changed:
+
+```yaml
+- name: Add Docker's official APT repository
+  ansible.builtin.deb822_repository:
+    # ...
+    state: present
+  register: docker_repository
+
+- name: Update APT package indexes after adding Docker repository
+  ansible.builtin.apt:
+    update_cache: true
+  when: docker_repository.changed
+```
+
+The next complete preparation-only run demonstrated convergence:
+
+```text
+target : ok=17 changed=0 unreachable=0 failed=0 skipped=2
+```
+
+The `changed=0` evidence applies to that preparation run at that stage of implementation. It should not be generalized to the current complete play without qualification:
+
+- `application.yml` currently runs `make deploy` through `command`.
+- That task explicitly has `changed_when: true`.
+- A deployment invocation is therefore deliberately counted as a change, even if the lower-level deployment later finds no container difference.
+- A later successful full run in the implementation history reported `ok=20 changed=2 failed=0`, after the repository/environment/deployment tasks had been added.
+
+Reporting a deployment as changed is not a failure. It means the task has a real release side effect boundary that is not modeled as a declarative module. If the play is later required to report globally `changed=0`, the deployment command needs an independently correct change condition or must be split into a preparation-only and deployment play. It should not be made to report `false` merely to produce a nicer recap.
+
+#### 6. Ansible Vault
+
+I used Ansible Vault because the application requires database credentials, a Django secret key, and other runtime configuration. Plaintext secrets should not be placed in `group_vars/all.yml`, the environment template, command output, Git history, or this reference.
+
+There are two different inputs:
+
+| Item | Role |
+| --- | --- |
+| `ansible/group_vars/uptime_watch_target/vault.yml` | The encrypted YAML data file. Its contents begin with Ansible's Vault header and contain cipher text, not readable variable values. |
+| Vault password | The separate password used to decrypt the file. It is not the encrypted file and must not be committed or shown in output. |
+
+The current Vault file is stored at:
+
+```text
+ansible/group_vars/uptime_watch_target/vault.yml
+```
+
+Its placement under the inventory-group name makes Ansible load the variables for `uptime_watch_target`. The file is mode `0600` and begins with:
+
+```text
+$ANSIBLE_VAULT;1.1;AES256
+```
+
+That header proves that the local file is encrypted; it does not reveal the password or plaintext.
+
+The implementation includes environment variables for the Django and PostgreSQL runtime, but their decrypted values are intentionally excluded from this document. In the repository, the template reads only variable names such as `vault_django_secret_key` and `vault_postgres_password`, then renders the resulting `.env`.
+
+##### Creating and using the Vault
+
+The actual Vault creation command was:
+
+```bash
+ansible-vault create group_vars/uptime_watch_target/vault.yml
+```
+
+Playbook runs supplied the Vault password interactively:
+
+```bash
+ansible-playbook -i inventory/targets.ini playbook.yml --ask-vault-pass
+```
+
+`--ask-vault-pass` prompts at runtime; it does not put the password on the command line or into shell history.
+
+Common Vault operations:
+
+```bash
+# Create a new encrypted file
+ansible-vault create group_vars/uptime_watch_target/vault.yml
+
+# Open and edit the decrypted form in the configured editor
+ansible-vault edit group_vars/uptime_watch_target/vault.yml
+
+# Display plaintext for the current terminal only
+ansible-vault view group_vars/uptime_watch_target/vault.yml
+
+# Encrypt an existing plaintext YAML file in place
+ansible-vault encrypt group_vars/uptime_watch_target/vault.yml
+
+# Replace the Vault password after decrypting with the old one
+ansible-vault rekey group_vars/uptime_watch_target/vault.yml
+```
+
+Use `encrypt` only on a plaintext file. This repository's file is already encrypted; trying to encrypt it again reports that the input is already encrypted. Use `edit` or `view` for an existing Vault file.
+
+For unattended automation, Ansible can use a separately secured Vault password file or a secret-manager-backed password client. A password file must have restrictive permissions and must not be committed. No persistent Vault password file was reliably recovered for this implementation, so this reference documents only the verified interactive `--ask-vault-pass` method and does not claim that unattended Vault decryption was configured.
+
+##### Safe handling in tasks
+
+The environment template task uses:
+
+```yaml
+no_log: true
+```
+
+This suppresses the task's arguments and results so Vault-derived values are less likely to be exposed in normal Ansible output. It should be used on tasks that handle secret values, while the actual error condition should still be understood through controlled logs or debugging that excludes secret contents.
+
+The rendered file is written as:
+
+```yaml
+owner: "{{ app_user }}"
+group: "{{ app_group }}"
+mode: "0600"
+```
+
+This restricts the `.env` file to the application owner on EC2.
+
+`no_log` is not a substitute for secure file permissions, encrypted storage, or careful terminal behavior. Secret values should not be pasted into issue reports, copied into a failure summary, or echoed by verification commands.
+
+The encrypted Vault file is currently a local untracked worktree file rather than a verified committed project artifact. Encryption makes it suitable for controlled versioning, but the team still needs an explicit policy for whether that file is committed and how the Vault password is distributed. The current repository ignore rules do not prove that the Vault file or all future password files are excluded; this should be checked before a commit.
+
+#### 7. Application deployment through the existing workflow
+
+The Ansible play prepares the host and then reuses the project's established release mechanism rather than maintaining a second deployment implementation.
+
+The application tasks perform these steps:
+
+1. Use the `git` module to synchronize `https://github.com/AboubakrLaid/uptime-watch.git` into `/home/ubuntu/uptime-watch` on `main`.
+2. Render the Vault-backed `.env` as the `ubuntu` user with mode `0600`.
+3. Run the existing deployment entry point:
+
+```bash
+make -C /home/ubuntu/uptime-watch deploy IMAGE_TAG=latest
+```
+
+The equivalent implementation in Ansible is:
+
+```yaml
+- name: Deploy application with the existing deployment workflow
+  ansible.builtin.command:
+    argv:
+      - make
+      - -C
+      - "{{ app_dir }}"
+      - deploy
+      - "IMAGE_TAG={{ app_image_tag }}"
+  become: true
+  become_user: "{{ app_user }}"
+```
+
+##### Why `make deploy` is reused
+
+`make deploy` is already the project's deployment transaction boundary. It:
+
+- acquires a `flock` deployment lock;
+- fetches and checks out `origin/main`;
+- refreshes the deployment checkout;
+- invokes `deploy.sh --image-tag "$IMAGE_TAG"`;
+- prevents concurrent deployments from modifying the same checkout.
+
+`deploy.sh` already:
+
+- validates prerequisites and the image tag;
+- authenticates Docker to ECR using the EC2 instance role;
+- verifies the selected image;
+- records the previous application image for rollback;
+- runs the production Compose file;
+- applies Django database migrations;
+- collects static files;
+- checks Django, Nginx, and public HTTPS readiness;
+- performs the existing application-level rollback behavior on failure.
+
+Reimplementing migrations and `collectstatic` in Ansible would duplicate release logic and create two versions of deployment behavior. It would also bypass safeguards already provided by the script, such as image rollback, static-file snapshots, locking, health verification, and structured deployment outcomes.
+
+##### Ansible, Docker, ECR, and Compose
+
+The component relationship is:
+
+```text
+Terraform
+  -> provisions secondary EC2, networking, IAM profile, and Elastic IP
+
+Ansible
+  -> connects over SSH
+  -> installs AWS CLI, Docker, Compose plugin, Certbot, and deployment utilities
+  -> writes /home/ubuntu/uptime-watch/.env
+  -> starts the existing make deploy entry point
+
+make deploy + deploy.sh
+  -> refresh the checkout
+  -> use the EC2 IAM role to authenticate to ECR
+  -> pull the selected Uptime Watch image
+  -> run Docker Compose
+  -> migrate and collect static files
+  -> verify health
+
+Docker Compose
+  -> starts uptime-watch-app and Nginx
+  -> reads the ECR-backed APP_IMAGE generated by deploy.sh
+  -> mounts certificates, Nginx configuration, logs, and static files
+```
+
+GitHub Actions remains the producer of ECR images and, for the original production host, the SSM-based deployment orchestrator. Ansible did not replace ECR, Docker Compose, or `deploy.sh`; it prepared another host and handed application deployment to the same known mechanism.
+
+##### Keeping production and DNS unchanged
+
+The Ansible inventory contained only the new secondary instance, not the original production instance. Terraform defined the original instance and a separately tagged `uptime_watch_secondary` practice instance; the Ansible target points to that secondary instance's Elastic IP.
+
+No DNS record was updated as part of the Ansible play. The established `upwatch.live` DNS continued to point to production. This means:
+
+- SSH and Ansible automation targeted the secondary Elastic IP;
+- the original production EC2 instance was not converged by this inventory;
+- Docker containers were created on the secondary host;
+- the DNS name did not need to be repointed to validate host preparation.
+
+There is one verification limitation to preserve in future work: `deploy.sh` currently checks public readiness at `https://upwatch.live/health/ready/`. During a secondary-instance exercise, that hostname still exercises the production address. A successful public-domain check therefore does not prove that public traffic reaches the secondary host. The secondary deployment should additionally be checked directly through its Elastic IP, HTTP `Host` header, container health, and Nginx's local endpoint. Changing DNS was deliberately outside this practice exercise.
+
+The Certbot task is also a preparatory operation. It requests or reuses certificate material for the domain but does not change DNS. On a host not receiving the domain's validation traffic, an uncached `certbot certonly --standalone` request would require a controlled validation approach or temporary routing; the play's `creates` guard only proves that an existing certificate prevents a repeated request.
+
+#### 8. Verification and troubleshooting
+
+Verification was performed in layers. Each layer answers a different question and should not be treated as interchangeable.
+
+##### 1. Verify Ansible and inventory
+
+Check the installed control-node version:
+
+```bash
+ansible --version
+```
+
+Inspect the effective inventory:
+
+```bash
+ansible-inventory -i inventory/targets.ini --graph
+ansible-inventory -i inventory/targets.ini --host target
+```
+
+The host inspection was used to confirm that the `target` alias resolved to the secondary EC2 address, Ubuntu user, and expected private-key path.
+
+Check syntax before contacting the host:
+
+```bash
+ansible-playbook -i inventory/targets.ini playbook.yml --syntax-check
+```
+
+For a play with Vault variables:
+
+```bash
+ansible-playbook -i inventory/targets.ini playbook.yml \
+  --syntax-check \
+  --ask-vault-pass
+```
+
+##### 2. Verify SSH connectivity
+
+The module-resolution name is `ansible.builtin.ping`, with a dot. The verified ping command was:
+
+```bash
+ansible uptime_watch_target \
+  -i inventory/targets.ini \
+  -m ansible.builtin.ping
+```
+
+During the exercise, `ansible.builtin-ping` was tried once with a hyphen and corrected to `ansible.builtin.ping`.
+
+Ansible's `ping` module is not an ICMP ping. It establishes the configured SSH connection, runs the Python-backed module, and returns a success response.
+
+##### 3. Verify installed software and services
+
+The project history records an ad-hoc verification command that ran on the target through the shell module. The command checked Docker, Docker Compose, AWS CLI, Certbot, Git, Python, PostgreSQL client, `flock`, systemd service state, the Ubuntu user's groups, and filesystem ownership/permissions:
+
+```bash
+ansible uptime_watch_target \
+  -i inventory/targets.ini \
+  -b \
+  -m ansible.builtin.shell \
+  -a 'docker --version;
+      docker compose version;
+      aws --version;
+      certbot --version;
+      git --version;
+      python3 --version;
+      psql --version;
+      command -v flock;
+      systemctl is-active docker containerd certbot.timer nginx;
+      systemctl is-enabled docker containerd certbot.timer nginx;
+      groups ubuntu'
+```
+
+Expected service interpretation:
+
+| Service | Expected target state |
+| --- | --- |
+| `docker` | active and enabled |
+| `containerd` | active and enabled |
+| `certbot.timer` | active and enabled |
+| host `nginx` | inactive and disabled, because Nginx is containerized |
+
+The exact raw version output was not retained in the repository as an authoritative version record. `group_vars/all.yml` pins the requested AWS CLI installer to the configured version; the verification command should be rerun to capture the current installed versions when a release record is required.
+
+##### 4. Verify the application checkout and secret file without exposing values
+
+Safe checks inspect file presence, variable names, ownership, and permissions without printing secret values:
+
+```bash
+ansible uptime_watch_target \
+  -i inventory/targets.ini \
+  -b \
+  --ask-vault-pass \
+  -m ansible.builtin.shell \
+  -a 'git -C /home/ubuntu/uptime-watch status --short --branch;
+      git -C /home/ubuntu/uptime-watch rev-parse --short=12 HEAD;
+      test -f /home/ubuntu/uptime-watch/.env && echo env_file=present;
+      test -f /home/ubuntu/uptime-watch/docker-compose-prod.yml && echo compose_prod=present;
+      test -f /home/ubuntu/uptime-watch/deploy.sh && echo deploy_script=present;
+      test -f /home/ubuntu/uptime-watch/Makefile && echo makefile=present;
+      sed -n "s/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p" /home/ubuntu/uptime-watch/.env;
+      stat -c "%n %U:%G %a" /home/ubuntu/uptime-watch/.env'
+```
+
+The `sed` expression lists only variable names, not the values. That distinction is essential when collecting support output.
+
+##### 5. Verify containers and health
+
+Container inventory and status were checked with:
+
+```bash
+ansible uptime_watch_target \
+  -i inventory/targets.ini \
+  -b \
+  --ask-vault-pass \
+  -m ansible.builtin.command \
+  -a 'docker ps --no-trunc'
+```
+
+For routine inspection, a readable status table is:
+
+```bash
+ansible uptime_watch_target \
+  -i inventory/targets.ini \
+  -b \
+  -m ansible.builtin.shell \
+  -a 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"'
+```
+
+The application container is `uptime-watch-app`, and the proxy container is `uptime-watch-nginx`. The Django service has a Docker health check against:
+
+```text
+http://127.0.0.1:8000/health/ready/
+```
+
+The deployment script separately verifies:
+
+- Django container health;
+- Nginx's local `https://upwatch.live/nginx-health` endpoint using `127.0.0.1` resolution inside the Nginx container;
+- the public `https://upwatch.live/health/ready/` endpoint.
+
+On the secondary host, the first two prove local container behavior; the third still reaches whichever EC2 address the public DNS resolves to. For direct secondary checks, use the secondary Elastic IP or an explicit local `Host` mapping without changing public DNS.
+
+##### 6. Interpret the play recap
+
+A first-time preparation run changed the target as expected:
+
+```text
+ok=19 changed=12 failed=0
+```
+
+After the Docker repository cache fix, the preparation-only idempotency run was:
+
+```text
+ok=17 changed=0 unreachable=0 failed=0 skipped=2
+```
+
+Later application integration introduced repository, environment, and deployment tasks. A successful full run in the recovered history reported:
+
+```text
+ok=20 changed=2 unreachable=0 failed=0 skipped=2
+```
+
+The task-level output for that recap was not retained as an authoritative final transcript, so the exact two changed tasks should not be guessed. The recap is a summary, not proof that every application resource remained unchanged; future runs should be reviewed task by task.
+
+##### Troubleshooting errors encountered
+
+The following failures are supported by the recovered implementation history:
+
+| Symptom | Cause | Resolution |
+| --- | --- | --- |
+| Ansible could not resolve `ansible.builtin-ping`. | A hyphen was used instead of the module's dotted fully qualified name. | Used `-m ansible.builtin.ping`. |
+| Git clone failed with `destination path '/home/ubuntu/uptime-watch' already exists and is not an empty directory`. | The target directory had been created by earlier preparation tasks but was not an existing Git checkout. | Reworked the application preparation around repository synchronization and cleaned the incomplete practice directory during controlled troubleshooting. |
+| Deployment task failed because `make` was missing. | `make` was needed by the existing deployment entry point but was not initially in `deployment_dependencies`. | Added `make` to the APT package list in `group_vars/all.yml`. |
+| Ad-hoc commands attempted Vault decryption without a password. | Encrypted group variables are loaded for inventory commands even when the command is not directly using the secret. | Added `--ask-vault-pass` to inventory commands when that group Vault needed to be decrypted. |
+| `ansible-vault encrypt` reported that the input was already encrypted. | The Vault file had already been created in encrypted format. | Used Vault `edit` or `view`, not a second `encrypt`. |
+| A second preparation run reported `changed=1`. | The Docker repository APT cache refresh ran unconditionally. | Registered `docker_repository` and gated `update_cache` on `docker_repository.changed`, then verified `changed=0`. |
+| Deployment readiness checks did not all represent the secondary host. | The shared script's public URL is `upwatch.live`, whose DNS remained on production. | Kept public DNS unchanged and verified secondary-local container/Nginx behavior separately. |
+
+Troubleshooting should follow a short sequence:
+
+1. Verify the inventory resolves the intended host only.
+2. Test SSH with the `ping` module.
+3. Run `--syntax-check`.
+4. Use `--check --diff` where the modules safely support check mode.
+5. Read the first real failure rather than only the final recap.
+6. Re-run after the cause is fixed and confirm `failed=0` and `unreachable=0`.
+7. Run a second preparation pass to inspect unnecessary `changed` tasks.
+8. Verify the application and containers independently of the Ansible recap.
+
+#### 9. Practical command reference
+
+Run these commands from the `ansible/` directory unless a different working directory is stated.
+
+| Command | What it does | When to use it | Project example |
+| --- | --- | --- | --- |
+| `ansible --version` | Shows the Ansible version and active configuration context. | Confirm the control node before troubleshooting. | `ansible --version` |
+| `ansible-inventory --list` | Renders the effective inventory as JSON. | Inspect all resolved hosts and variables; take care with Vault or sensitive variables. | `ansible-inventory -i inventory/targets.ini --list` |
+| `ansible-inventory --graph` | Shows group-to-host relationships without a large variable dump. | Confirm target grouping quickly. | `ansible-inventory -i inventory/targets.ini --graph` |
+| `ansible-inventory --host target` | Resolves variables for one host. | Confirm the target alias, SSH user, host address, and key path. | `ansible-inventory -i inventory/targets.ini --host target` |
+| `ansible all -m ping` | Tests control-node connectivity to every inventory host. | Baseline connectivity and Python-module execution. | `ansible -i inventory/targets.ini all -m ansible.builtin.ping` |
+| `ansible uptime_watch_target -m ping` | Restricts connectivity testing to this practice group. | Verify only the secondary instance. | `ansible uptime_watch_target -i inventory/targets.ini -m ansible.builtin.ping` |
+| `ansible-playbook playbook.yml --syntax-check` | Parses the playbook and imported task structure without configuring the host. | Before every execution after YAML changes. | `ansible-playbook -i inventory/targets.ini playbook.yml --syntax-check --ask-vault-pass` |
+| `ansible-playbook playbook.yml --check` | Requests check mode to predict supported changes without applying them. | Review declarative package, file, and service changes. Some command tasks still require explicit check-mode behavior. | `ansible-playbook -i inventory/targets.ini playbook.yml --check --ask-vault-pass` |
+| `ansible-playbook playbook.yml` | Runs the selected play and reports a recap. | Apply host preparation and the configured application workflow. | `ansible-playbook -i inventory/targets.ini playbook.yml --ask-vault-pass` |
+| `ansible-playbook ... --limit target` | Restricts a larger inventory run to one host. | Safety check while more hosts are added. | `ansible-playbook -i inventory/targets.ini playbook.yml --limit target --ask-vault-pass` |
+| `ansible-vault create` | Creates a file and opens it for encrypted variable entry. | Initial Vault file creation. | `ansible-vault create group_vars/uptime_watch_target/vault.yml` |
+| `ansible-vault edit` | Decrypts in an editor and re-encrypts on save. | Update secret variables safely. | `ansible-vault edit group_vars/uptime_watch_target/vault.yml` |
+| `ansible-vault view` | Decrypts to terminal output for inspection. | Careful local inspection when terminal capture is controlled. | `ansible-vault view group_vars/uptime_watch_target/vault.yml` |
+| `ansible-vault encrypt` | Encrypts an existing plaintext file in place. | Convert a newly written plaintext variable file once. | `ansible-vault encrypt path/to/plaintext.yml` |
+| `ansible-vault rekey` | Changes the password protecting an existing Vault file. | Rotate the Vault password. | `ansible-vault rekey group_vars/uptime_watch_target/vault.yml` |
+
+Useful execution sequences:
+
+```bash
+# Parse and then apply the play after entering the Vault password
+ansible-playbook -i inventory/targets.ini playbook.yml \
+  --syntax-check --ask-vault-pass &&
+ansible-playbook -i inventory/targets.ini playbook.yml \
+  --ask-vault-pass
+```
+
+```bash
+# Preview supported changes
+ansible-playbook -i inventory/targets.ini playbook.yml \
+  --check --ask-vault-pass
+```
+
+```bash
+# Test a second idempotency pass after a successful convergence
+ansible-playbook -i inventory/targets.ini playbook.yml \
+  --ask-vault-pass
+```
+
+`--check` is not identical to a real run for every module. Shell/command tasks, certificate operations, Git changes, and release deployment behavior should be reviewed carefully. In this project, check mode is useful for predicting much of the package/file/service preparation, but the final deployment must still be verified with the real guarded workflow.
+
+#### 10. Interview summary
+
+The concise version of the implementation is:
+
+- Terraform provisioned a separate EC2 target.
+- Ansible connected from the local control node to that target through SSH as `ubuntu`.
+- The inventory group prevented the production instance from being selected.
+- The play gathered facts, escalated with `sudo`, installed system and deployment prerequisites, configured Docker's signed APT repository, enabled Docker/containerd/Certbot, disabled host Nginx, and synchronized the application.
+- Vault encrypted the sensitive runtime variables; `--ask-vault-pass` supplied the separate password interactively; `no_log` and mode `0600` reduced exposure of generated `.env` contents.
+- The application task reused `make deploy`, which delegated ECR authentication, Compose startup, migrations, static collection, health checks, locking, and rollback to the established deployment workflow.
+- The Docker APT cache task was made conditional on `docker_repository.changed`, eliminating the one preparation-task change seen on the idempotent rerun.
+- The preparation-only recap reached `changed=0`; the current complete release play intentionally reports deployment-related changes.
+- Public DNS and the production instance were not changed during the secondary-instance exercise.
+- Verification covered inventory resolution, SSH, package/service state, checkout and `.env` structure, ECR access, containers, Docker health, and local proxy behavior.
+
+This is the key DevOps distinction: Terraform built the host, Ansible prepared it, and the existing deployment system released the application. Each tool owns a clear boundary and can be reviewed independently.

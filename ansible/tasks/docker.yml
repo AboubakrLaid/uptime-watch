@@ -1,0 +1,62 @@
+---
+- name: Create Docker APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Docker's official APT signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Add Docker's official APT repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types:
+      - deb
+    uris:
+      - https://download.docker.com/linux/ubuntu
+    suites:
+      - "{{ ansible_facts.distribution_release }}"
+    components:
+      - stable
+    architectures:
+      - amd64
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+  register: docker_repository
+
+- name: Update APT package indexes after adding Docker repository
+  ansible.builtin.apt:
+    update_cache: true
+  when: docker_repository.changed
+
+- name: Install Docker Engine and Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Add the application user to the Docker group
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    groups: docker
+    append: true

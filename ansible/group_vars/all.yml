@@ -1,0 +1,23 @@
+---
+app_user: ubuntu
+app_group: ubuntu
+app_dir: /home/ubuntu/uptime-watch
+aws_region: eu-west-3
+aws_cli_version: "2.31.35"
+certbot_email: belmiloudaboubakr.contact@gmail.com
+app_image_tag: latest
+
+docker_dependencies:
+  - ca-certificates
+  - curl
+  - gnupg
+
+deployment_dependencies:
+  - git
+  - make
+  - wget
+  - jq
+  - unzip
+  - util-linux
+  - postgresql-client
+  - openssh-server

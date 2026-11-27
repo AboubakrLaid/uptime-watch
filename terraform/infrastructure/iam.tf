@@ -1,5 +1,9 @@
+locals {
+  ec2_ecr_profile_name = "uptime-watch-ec2-ecr-pull"
+}
+
 resource "aws_iam_role" "ec2_ecr_pull" {
-  name                 = "uptime-watch-ec2-ecr-pull"
+  name                 = local.ec2_ecr_profile_name
   path                 = "/"
   description          = "Allows EC2 instances to call AWS services on your behalf."
   max_session_duration = 3600
@@ -19,17 +23,17 @@ resource "aws_iam_role" "ec2_ecr_pull" {
 }
 
 resource "aws_iam_instance_profile" "ec2_ecr_pull" {
-  name = "uptime-watch-ec2-ecr-pull"
+  name = local.ec2_ecr_profile_name
   path = "/"
   role = aws_iam_role.ec2_ecr_pull.name
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.ec2_ecr_pull.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_role_policy_attachment" "ecr_read_only" {
   role       = aws_iam_role.ec2_ecr_pull.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }

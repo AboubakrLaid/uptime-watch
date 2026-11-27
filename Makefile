@@ -1,6 +1,8 @@
 install:
 	pip3 install -r requirements.txt
 
+IMAGE_TAG ?= latest
+
 makemigrations:
 	python3 manage.py makemigrations
 
@@ -16,7 +18,6 @@ up:
 	docker compose up -d
 
 deploy:
-	@test -n "$(IMAGE_TAG)" || { echo "IMAGE_TAG is required to deploy."; exit 1; }
 	@command -v flock >/dev/null 2>&1 || { echo "flock is required to prevent concurrent deployments."; printf 'DEPLOYMENT_OUTCOME=deployment_failed\nROLLBACK_ATTEMPTED=no\nROLLBACK_OUTCOME=not_attempted\nATTEMPTED_IMAGE=%s\nFAILURE_STAGE=check flock dependency\nFAILURE_STATUS=1\n' "$(IMAGE_TAG)"; exit 1; }
 	@flock -n -E 75 "$${DEPLOY_LOCK_FILE:-$$HOME/.uptime-watch-deploy.lock}" bash -c '\
 		set -euo pipefail; \

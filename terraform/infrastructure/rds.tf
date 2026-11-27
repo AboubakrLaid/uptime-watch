@@ -2,9 +2,9 @@ resource "aws_db_subnet_group" "uptime_watch" {
   name        = "rds-ec2-db-subnet-group-1"
   description = "Created from the RDS Management Console"
   subnet_ids = [
-    "subnet-02302cb8f5113bf18",
-    "subnet-09931c2ba8096a429",
-    "subnet-0650e48366411d492"
+    aws_subnet.rds_1.id,
+    aws_subnet.rds_2.id,
+    aws_subnet.rds_3.id
   ]
 }
 
@@ -19,12 +19,12 @@ resource "aws_db_instance" "uptime_watch" {
   max_allocated_storage = 1000
   storage_type          = "gp2"
   storage_encrypted     = true
-  kms_key_id            = "arn:aws:kms:eu-west-3:373080580380:key/84bc28f5-a50a-4f00-b646-5aa79afa44ef"
+  kms_key_id            = var.rds_kms_key_id
 
   username = "postgres"
 
   db_subnet_group_name   = aws_db_subnet_group.uptime_watch.name
-  vpc_security_group_ids = ["sg-09fa01cdc133924e0"]
+  vpc_security_group_ids = [aws_security_group.rds_ec2.id]
 
   publicly_accessible     = false
   multi_az                = false
@@ -36,13 +36,17 @@ resource "aws_db_instance" "uptime_watch" {
 
   auto_minor_version_upgrade = true
   monitoring_interval        = 60
-  monitoring_role_arn        = "arn:aws:iam::373080580380:role/rds-monitoring-role"
+  monitoring_role_arn        = data.aws_iam_role.rds_monitoring.arn
 
   performance_insights_enabled          = true
-  performance_insights_kms_key_id       = "arn:aws:kms:eu-west-3:373080580380:key/84bc28f5-a50a-4f00-b646-5aa79afa44ef"
+  performance_insights_kms_key_id       = var.rds_kms_key_id
   performance_insights_retention_period = 7
 
   iam_database_authentication_enabled = false
   copy_tags_to_snapshot               = true
   skip_final_snapshot                 = true
+}
+
+data "aws_iam_role" "rds_monitoring" {
+  name = "rds-monitoring-role"
 }

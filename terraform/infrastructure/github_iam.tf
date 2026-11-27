@@ -20,15 +20,15 @@ resource "aws_iam_role" "github_actions" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::373080580380:oidc-provider/token.actions.githubusercontent.com"
+          Federated = aws_iam_openid_connect_provider.github.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
             "token.actions.githubusercontent.com:sub" = [
-              "repo:AboubakrLaid@107946074/uptime-watch@1433115526:ref:refs/heads/main",
-              "repo:AboubakrLaid@107946074/uptime-watch@1433115526:ref:refs/heads/developement"
+              "repo:${var.github_owner}@${var.github_repository_id}/${var.github_repository}@${var.github_branch_ids.main}:ref:refs/heads/main",
+              "repo:${var.github_owner}@${var.github_repository_id}/${var.github_repository}@${var.github_branch_ids.developement}:ref:refs/heads/developement"
             ]
           }
         }
@@ -68,8 +68,8 @@ resource "aws_iam_role_policy" "github_ssm" {
         Effect = "Allow"
         Action = "ssm:SendCommand"
         Resource = [
-          "arn:aws:ssm:eu-west-3::document/AWS-RunShellScript",
-          "arn:aws:ec2:eu-west-3:373080580380:instance/i-00d6c3e1a6a3b4929"
+          "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}::document/AWS-RunShellScript",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:instance/${aws_instance.uptime_watch.id}"
         ]
       },
       {
@@ -94,12 +94,12 @@ resource "aws_iam_role_policy" "github_ses_send" {
         Effect = "Allow"
         Action = ["ses:SendEmail"]
         Resource = [
-          "arn:aws:ses:eu-west-3:373080580380:identity/upwatch.live",
-          "arn:aws:ses:eu-west-3:373080580380:identity/belmiloudaboubakr.contact@gmail.com"
+          aws_ses_domain_identity.uptime_watch.arn,
+          aws_ses_email_identity.gmail.arn
         ]
         Condition = {
           StringEquals = {
-            "ses:FromAddress" = "alerts@upwatch.live"
+            "ses:FromAddress" = var.alert_from_address
           }
         }
       }
@@ -109,5 +109,5 @@ resource "aws_iam_role_policy" "github_ses_send" {
 
 resource "aws_iam_role_policy_attachment" "github_ecr_full_access" {
   role       = aws_iam_role.github_actions.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
 }

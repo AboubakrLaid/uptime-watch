@@ -1,0 +1,35 @@
+---
+- name: Install Certbot and the Certbot Nginx plugin
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Ensure the Certbot timer is enabled
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+
+- name: Keep the host Nginx service disabled
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: false
+    state: stopped
+
+- name: Obtain the application TLS certificate
+  ansible.builtin.command:
+    argv:
+      - certbot
+      - certonly
+      - --standalone
+      - --non-interactive
+      - --agree-tos
+      - --email
+      - "{{ certbot_email }}"
+      - --domains
+      - upwatch.live,www.upwatch.live
+      - --keep-until-expiring
+  args:
+    creates: /etc/letsencrypt/live/upwatch.live/fullchain.pem

@@ -20,6 +20,7 @@ case "$*" in
   *"get-login-password"*) printf 'token\n' ;;
   *"describe-images"*)
     [[ "${MOCK_IMAGE_EXISTS:-yes}" == "yes" ]]
+    printf '%s\n' "$*" >> "$MOCK_AWS_COMMAND_LOG"
     ;;
   *)
     echo "Unexpected aws invocation: $*" >&2
@@ -184,6 +185,8 @@ reset_case() {
   printf 'old static content\n' > "$CASE_DIR/staticfiles/site.css"
   MOCK_CURRENT_IMAGE_FILE="$CASE_DIR/current-image"
   MOCK_COMMAND_LOG="$CASE_DIR/commands.log"
+  MOCK_AWS_COMMAND_LOG="$CASE_DIR/aws-commands.log"
+  : > "$MOCK_AWS_COMMAND_LOG"
   MOCK_STATIC_DIR="$CASE_DIR/staticfiles"
   DEPLOY_LOCK_FILE="$CASE_DIR/deploy.lock"
   MOCK_PREVIOUS_IMAGE_REFERENCE="$PREVIOUS_IMAGE_REFERENCE"
@@ -200,6 +203,7 @@ reset_case() {
 
 run_deploy() {
   local status
+  local image_tag="${1:-$NEW_IMAGE_TAG}"
   set +e
   PATH="$BIN_DIR:$PATH" \
     HOME="$CASE_DIR/home" \
@@ -213,6 +217,7 @@ run_deploy() {
     MOCK_PREVIOUS_IMAGE_ID="$PREVIOUS_IMAGE_ID" \
     MOCK_PREVIOUS_IMAGE_REFERENCE="$MOCK_PREVIOUS_IMAGE_REFERENCE" \
     MOCK_NEW_IMAGE_ID="$NEW_IMAGE_ID" \
+    MOCK_AWS_COMMAND_LOG="$MOCK_AWS_COMMAND_LOG" \
     MOCK_HAS_PREVIOUS="$MOCK_HAS_PREVIOUS" \
     MOCK_FAIL_STAGE="$MOCK_FAIL_STAGE" \
     MOCK_FAIL_NEW_HEALTH="$MOCK_FAIL_NEW_HEALTH" \
@@ -227,7 +232,7 @@ run_deploy() {
     PUBLIC_HEALTH_RETRIES=1 \
     PUBLIC_HEALTH_RETRY_INTERVAL_SECONDS=1 \
     PUBLIC_HEALTH_REQUEST_TIMEOUT_SECONDS=1 \
-    bash "$REPO_ROOT/deploy.sh" --image-tag "$NEW_IMAGE_TAG" > "$OUTPUT_FILE" 2>&1
+    bash "$REPO_ROOT/deploy.sh" --image-tag "$image_tag" > "$OUTPUT_FILE" 2>&1
   status=$?
   set -e
   return "$status"
@@ -247,6 +252,27 @@ assert_contains "$MOCK_COMMAND_LOG" "nginx"
 IFS='|' read -r current_id _ < "$MOCK_CURRENT_IMAGE_FILE"
 [[ "$current_id" == "$NEW_IMAGE_ID" ]] || fail "success did not leave the new image running"
 [[ "$(<"$MOCK_STATIC_DIR/site.css")" == "new static content" ]] || fail "success did not collect static files"
+
+reset_case latest-tag
+if run_deploy latest; then
+  :
+else
+  fail "latest deployment exited nonzero"
+fi
+assert_contains "$OUTPUT_FILE" "ATTEMPTED_IMAGE=373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:latest"
+assert_contains "$MOCK_AWS_COMMAND_LOG" "imageTag=latest"
+assert_contains "$MOCK_COMMAND_LOG" "APP_IMAGE=373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:latest"
+
+reset_case explicit-custom-tag
+CUSTOM_IMAGE_TAG="release-canary_1"
+if run_deploy "$CUSTOM_IMAGE_TAG"; then
+  :
+else
+  fail "explicit custom-tag deployment exited nonzero"
+fi
+assert_contains "$OUTPUT_FILE" "ATTEMPTED_IMAGE=373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:$CUSTOM_IMAGE_TAG"
+assert_contains "$MOCK_AWS_COMMAND_LOG" "imageTag=$CUSTOM_IMAGE_TAG"
+assert_contains "$MOCK_COMMAND_LOG" "APP_IMAGE=373080580380.dkr.ecr.eu-west-3.amazonaws.com/uptime-watch:$CUSTOM_IMAGE_TAG"
 
 reset_case start-failure-before-static
 MOCK_FAIL_STAGE="up"
@@ -368,6 +394,7 @@ else
 fi
 [[ "$status" -ne 0 ]] || fail "missing ECR image returned success"
 assert_not_contains "$MOCK_COMMAND_LOG" "compose pull"
+assert_contains "$OUTPUT_FILE" "Use 'latest' or a tag that contains both letters and digits."
 assert_contains "$OUTPUT_FILE" "ROLLBACK_ATTEMPTED=no"
 assert_contains "$OUTPUT_FILE" "ROLLBACK_OUTCOME=not_attempted"
 

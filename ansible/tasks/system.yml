@@ -1,0 +1,39 @@
+---
+- name: Update APT package indexes
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name: "{{ docker_dependencies }}"
+    state: present
+
+- name: Install deployment utilities
+  ansible.builtin.apt:
+    name: "{{ deployment_dependencies }}"
+    state: present
+
+- name: Check the target AWS CLI version
+  ansible.builtin.command: aws --version
+  register: target_aws_cli
+  changed_when: false
+  failed_when: false
+
+- name: Install AWS CLI 2
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      tmpdir="$(mktemp -d)"
+      curl --fail --silent --show-error \
+        "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-{{ aws_cli_version }}.zip" \
+        --output "$tmpdir/awscliv2.zip"
+      unzip -q "$tmpdir/awscliv2.zip" -d "$tmpdir"
+      "$tmpdir/aws/install" --update
+      rm -rf "$tmpdir"
+  args:
+    executable: /bin/bash
+  when: >
+    target_aws_cli.rc != 0
+    or ('aws-cli/' + aws_cli_version) not in
+       ((target_aws_cli.stdout | default('')) + ' ' + (target_aws_cli.stderr | default('')))
