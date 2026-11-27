@@ -15,6 +15,7 @@ services:
       - DB_HOST
       - DB_PORT
       - ALLOWED_HOSTS
+      - CSRF_TRUSTED_ORIGINS
     volumes:
       - ./staticfiles:/code/staticfiles
     expose:
