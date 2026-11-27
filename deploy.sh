@@ -12,7 +12,7 @@ STATIC_DIR="${STATIC_DIR:-${REPO_ROOT}/staticfiles}"
 APP_SERVICE="${APP_SERVICE:-uptime-watch-app}"
 NGINX_SERVICE="${NGINX_SERVICE:-nginx}"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-IMAGE_TAG="${IMAGE_TAG:-}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 APP_HEALTH_TIMEOUT_SECONDS="${APP_HEALTH_TIMEOUT_SECONDS:-180}"
 APP_HEALTH_POLL_INTERVAL_SECONDS="${APP_HEALTH_POLL_INTERVAL_SECONDS:-5}"
 NGINX_HEALTH_RETRIES="${NGINX_HEALTH_RETRIES:-5}"
@@ -69,7 +69,7 @@ usage() {
 Usage: ./deploy.sh --image-tag IMAGE_TAG [options]
 
 Options:
-  -t, --image-tag      Timestamped image tag to deploy (required)
+  -t, --image-tag      Image tag to deploy (default: latest)
   -b, --branch         Git branch to deploy (default: main)
   -e, --env            Environment name (default: prod)
   -r, --region         AWS region (default: eu-west-3)
@@ -146,8 +146,14 @@ validate_positive_integer PUBLIC_HEALTH_RETRIES "$PUBLIC_HEALTH_RETRIES" || pref
 validate_positive_integer PUBLIC_HEALTH_RETRY_INTERVAL_SECONDS "$PUBLIC_HEALTH_RETRY_INTERVAL_SECONDS" || preflight_failure 2 "validate PUBLIC_HEALTH_RETRY_INTERVAL_SECONDS"
 validate_positive_integer PUBLIC_HEALTH_REQUEST_TIMEOUT_SECONDS "$PUBLIC_HEALTH_REQUEST_TIMEOUT_SECONDS" || preflight_failure 2 "validate PUBLIC_HEALTH_REQUEST_TIMEOUT_SECONDS"
 
-if [[ ! "$IMAGE_TAG" =~ ^upwatch-back-[0-9]{8}-[0-9]{6}-[0-9a-f]{7}$ ]]; then
-  echo "A valid timestamped image tag is required (upwatch-back-YYYYMMDD-HHMMSS-SHORTSHA)."
+if [[ -z "$IMAGE_TAG" ]]; then
+  IMAGE_TAG="latest"
+fi
+if [[ "$IMAGE_TAG" != "latest" ]] &&
+  { [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+    [[ ! "$IMAGE_TAG" =~ [A-Za-z] ]] ||
+    [[ ! "$IMAGE_TAG" =~ [0-9] ]]; }; then
+  echo "Image tag must be 'latest' or contain both letters and digits, using only letters, digits, '.', '_' or '-'."
   preflight_failure 2 "validate image tag"
 fi
 ATTEMPTED_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
@@ -221,7 +227,7 @@ if ! aws ecr describe-images \
   --repository-name "$ECR_REPOSITORY" \
   --image-ids "imageTag=${IMAGE_TAG}" \
   --region "$AWS_REGION" > /dev/null; then
-  echo "Required image tag '${IMAGE_TAG}' was not found in ECR; deployment cannot continue."
+  echo "ECR image tag '${IMAGE_TAG}' was not found. Use 'latest' or a tag that contains both letters and digits."
   preflight_failure 1 "verify requested ECR image"
 fi
 
