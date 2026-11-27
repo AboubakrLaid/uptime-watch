@@ -128,8 +128,8 @@ The application is a small website-availability tracking service, inspired by to
 - The rollback is application-level only: it does not restore Amazon RDS or reverse database migrations.
 - Reports the deployment outcome and rollback result in an SES email.
 
-| Docker images retained for rollback | Deployment failure and successful rollback |
-| --- | --- |
+| Docker images retained for rollback                                                       | Deployment failure and successful rollback                                                                                                             |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | <img src="pics/terminal-proof.png" alt="Docker images retained for rollback" width="400"> | <img src="pics/Uptime%20Watch%20deployment%20failed;%20rollback%20succeeded.png" alt="Uptime Watch deployment failed; rollback succeeded" width="400"> |
 
 ### 14. Terraform infrastructure as code — 2026-11-24
@@ -138,3 +138,12 @@ The application is a small website-availability tracking service, inspired by to
 - Started with bootstrap configuration to initialize local Terraform state.
 - Moved the state to an encrypted S3 backend, then wrote configuration for the existing AWS infrastructure.
 - Imported the live resources into Terraform state and reconciled the configuration until the plan reported no changes.
+
+### 15. Provisioning and configuring a second EC2 instance — 2026-11-27
+
+- Trace: [snapshot at 3ed9960](https://github.com/AboubakrLaid/uptime-watch/tree/3ed9960)
+- Provisioned a second EC2 instance with Terraform, reusing the same production instance configuration, IAM role, and policies.
+- Automated the new host's configuration with Ansible, installing required packages, Docker, Docker Compose, and Certbot.
+- Used Ansible Vault to generate a protected application `.env` file.
+- Verified Ansible idempotency by reaching `changed=0` during the host preparation rerun.
+- The Ansible application task reused the existing `make deploy` command to deploy the application from Amazon ECR.
